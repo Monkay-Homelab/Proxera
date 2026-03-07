@@ -430,6 +430,24 @@ func GetAgentMetricsLive(c *fiber.Ctx) error {
 		}
 	}
 
+	// Local agent: metrics are collected internally, return from DB
+	if IsLocalAgent(agentID) {
+		rc := parseRange("1h")
+		buckets, summary, _, err := queryMetrics([]string{agentID}, rc, "")
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"error": fmt.Sprintf("Failed to get metrics: %v", err),
+			})
+		}
+		result, _ := json.Marshal(map[string]interface{}{
+			"buckets": buckets,
+			"summary": summary,
+		})
+		return c.JSON(fiber.Map{
+			"metrics": string(result),
+		})
+	}
+
 	command := models.AgentCommand{
 		Type:    "get_metrics",
 		Payload: map[string]interface{}{},
@@ -684,19 +702,34 @@ func GetRecentBlocked(c *fiber.Ctx) error {
 		go func(a agentInfo) {
 			defer wg.Done()
 
-			command := models.AgentCommand{
-				Type:    "crowdsec_alerts_list",
-				Payload: map[string]interface{}{},
-			}
-
-			response, err := SendCommandAndWaitForResponse(a.ID, command, CmdTimeoutFast)
-			if err != nil {
-				return // Agent not connected or timed out
-			}
-
 			var alerts []CrowdSecAlert
-			if err := json.Unmarshal([]byte(response), &alerts); err != nil {
-				return
+
+			if IsLocalAgent(a.ID) {
+				result, err := localAgent.CrowdSecListAlerts()
+				if err != nil {
+					return
+				}
+				alertJSON, err := json.Marshal(result)
+				if err != nil {
+					return
+				}
+				if err := json.Unmarshal(alertJSON, &alerts); err != nil {
+					return
+				}
+			} else {
+				command := models.AgentCommand{
+					Type:    "crowdsec_alerts_list",
+					Payload: map[string]interface{}{},
+				}
+
+				response, err := SendCommandAndWaitForResponse(a.ID, command, CmdTimeoutFast)
+				if err != nil {
+					return // Agent not connected or timed out
+				}
+
+				if err := json.Unmarshal([]byte(response), &alerts); err != nil {
+					return
+				}
 			}
 
 			mu.Lock()
@@ -806,6 +839,15 @@ func GetNginxLogs(c *fiber.Ctx) error {
 	lines := c.QueryInt("lines", 200)
 	if lines > 1000 {
 		lines = 1000
+	}
+
+	// Local agent: get logs directly
+	if IsLocalAgent(targetAgent) {
+		logs, err := localAgent.GetNginxLogs(lines)
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		}
+		return c.JSON(fiber.Map{"logs": logs, "agent": agentName})
 	}
 
 	command := models.AgentCommand{

@@ -13,6 +13,35 @@ import (
 	"github.com/proxera/agent/pkg/types"
 )
 
+// cloudflareIPRanges contains Cloudflare's published IP ranges.
+// https://www.cloudflare.com/ips/
+var cloudflareIPRanges = []string{
+	// IPv4
+	"173.245.48.0/20",
+	"103.21.244.0/22",
+	"103.22.200.0/22",
+	"103.31.4.0/22",
+	"141.101.64.0/18",
+	"108.162.192.0/18",
+	"190.93.240.0/20",
+	"188.114.96.0/20",
+	"197.234.240.0/22",
+	"198.41.128.0/17",
+	"162.158.0.0/15",
+	"104.16.0.0/13",
+	"104.24.0.0/14",
+	"172.64.0.0/13",
+	"131.0.72.0/22",
+	// IPv6
+	"2400:cb00::/32",
+	"2606:4700::/32",
+	"2803:f800::/32",
+	"2405:b500::/32",
+	"2405:8100::/32",
+	"2a06:98c0::/29",
+	"2c0f:f248::/32",
+}
+
 // SanitizeDomain converts a domain name to a safe filesystem identifier.
 // Underscores are escaped to double-underscores first, then dots become single underscores.
 // This ensures domains with underscores (e.g., "my_app.example.com") produce unique filenames.
@@ -59,10 +88,32 @@ func compareVersions(a, b string) int {
 
 // DetectNginxVersion returns the installed nginx version (e.g. "1.28.2").
 // Returns empty string if nginx is not installed or version cannot be determined.
+// In Docker mode, it derives the container name from NGINX_TEST_CMD to query the right container.
 func DetectNginxVersion() string {
+	// Try local nginx first
 	out, err := exec.Command("nginx", "-v").CombinedOutput()
 	if err != nil {
-		return ""
+		// Docker mode: extract container from NGINX_TEST_CMD (e.g. "docker exec project-nginx-1 nginx -t")
+		testCmd := os.Getenv("NGINX_TEST_CMD")
+		if testCmd != "" {
+			parts := strings.Fields(testCmd)
+			// Look for "docker exec <container> ..."
+			for i, p := range parts {
+				if p == "exec" && i+1 < len(parts) {
+					container := parts[i+1]
+					out, err = exec.Command("docker", "exec", container, "nginx", "-v").CombinedOutput()
+					if err != nil {
+						return ""
+					}
+					break
+				}
+			}
+			if err != nil {
+				return ""
+			}
+		} else {
+			return ""
+		}
 	}
 	s := strings.TrimSpace(string(out))
 	if idx := strings.LastIndex(s, "/"); idx >= 0 {
@@ -97,9 +148,14 @@ server {
     {{- range trustedProxies . }}
     set_real_ip_from {{ . }};
     {{- end }}
-    real_ip_header X-Forwarded-For;
+    real_ip_header {{ realIPHeader . }};
     real_ip_recursive on;
-{{ end }}{{ if .SSL }}
+{{ end }}
+    # CrowdSec blocklist
+    if ($crowdsec_blocklist) {
+        return 403;
+    }
+{{ if .SSL }}
     # ACME Challenge
     location /.well-known/acme-challenge/ {
         alias /var/www/proxera-acme/.well-known/acme-challenge/;
@@ -175,9 +231,13 @@ server {
     {{- range trustedProxies . }}
     set_real_ip_from {{ . }};
     {{- end }}
-    real_ip_header X-Forwarded-For;
+    real_ip_header {{ realIPHeader . }};
     real_ip_recursive on;
 {{ end }}
+    # CrowdSec blocklist
+    if ($crowdsec_blocklist) {
+        return 403;
+    }
 
     # SSL Configuration
     ssl_certificate {{ .CertPath }};
@@ -256,7 +316,7 @@ server {
 {{ end }}{{ if hasBasicAuth . }}
     # Basic Authentication
     auth_basic "Restricted Access";
-    auth_basic_user_file /etc/nginx/.htpasswd_{{ sanitizeDomain .Domain }};
+    auth_basic_user_file {{ htpasswdPath . }};
 {{ end }}{{ if hasRedirects . }}
     # Redirects
     {{- range redirects . }}
@@ -379,7 +439,11 @@ server {
 }
 `
 
-func templateFuncMap(nginxVersion string) template.FuncMap {
+func templateFuncMap(nginxVersion string, opts ...string) template.FuncMap {
+	configDir := "/etc/nginx"
+	if len(opts) > 0 && opts[0] != "" {
+		configDir = opts[0]
+	}
 	return template.FuncMap{
 		"nginxVersionAtLeast": func(minVer string) bool {
 			if nginxVersion == "" {
@@ -389,6 +453,9 @@ func templateFuncMap(nginxVersion string) template.FuncMap {
 		},
 
 		"sanitizeDomain": SanitizeDomain,
+		"htpasswdPath": func(h types.Host) string {
+			return filepath.Join(configDir, fmt.Sprintf(".htpasswd_%s", SanitizeDomain(h.Domain)))
+		},
 
 		// Server names (domain + aliases)
 		"serverNames": func(h types.Host) string {
@@ -861,16 +928,30 @@ func templateFuncMap(nginxVersion string) template.FuncMap {
 			return h.Config != nil && h.Config.HTTPProxy != nil && *h.Config.HTTPProxy
 		},
 
-		// Trusted Proxies — emit set_real_ip_from directives so nginx uses X-Forwarded-For
-		// to determine the real client IP instead of the upstream proxy's IP.
+		// Trusted Proxies — emit set_real_ip_from directives so nginx uses the appropriate
+		// header to determine the real client IP instead of the upstream proxy's IP.
 		"hasTrustedProxies": func(h types.Host) bool {
-			return h.Config != nil && len(h.Config.TrustedProxies) > 0
+			if h.Config == nil {
+				return false
+			}
+			return len(h.Config.TrustedProxies) > 0 || h.Config.CloudflareRealIP
 		},
 		"trustedProxies": func(h types.Host) []string {
 			if h.Config == nil {
 				return nil
 			}
-			return h.Config.TrustedProxies
+			var proxies []string
+			if h.Config.CloudflareRealIP {
+				proxies = append(proxies, cloudflareIPRanges...)
+			}
+			proxies = append(proxies, h.Config.TrustedProxies...)
+			return proxies
+		},
+		"realIPHeader": func(h types.Host) string {
+			if h.Config != nil && h.Config.CloudflareRealIP {
+				return "CF-Connecting-IP"
+			}
+			return "X-Forwarded-For"
 		},
 
 		// Default Security Headers (X-Frame-Options, X-Content-Type-Options)
@@ -899,7 +980,7 @@ func GenerateConfig(host types.Host, configPath string) error {
 	nginxVersion := DetectNginxVersion()
 
 	// Create template with custom functions
-	tmpl, err := template.New("nginx").Funcs(templateFuncMap(nginxVersion)).Parse(nginxConfigTemplate)
+	tmpl, err := template.New("nginx").Funcs(templateFuncMap(nginxVersion, configPath)).Parse(nginxConfigTemplate)
 	if err != nil {
 		return fmt.Errorf("failed to parse template: %w", err)
 	}

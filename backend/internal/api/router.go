@@ -62,6 +62,9 @@ func SetupRoutes(app *fiber.App) {
 	user.Get("/nav-context", handlers.GetNavContext)
 	user.Post("/change-password", handlers.ChangePassword)
 	user.Delete("/me", handlers.DeleteAccount)
+	user.Get("/api-keys", handlers.ListAPIKeys)
+	user.Post("/api-keys", handlers.CreateAPIKey)
+	user.Delete("/api-keys/:keyId", handlers.DeleteAPIKey)
 
 	// Agents routes (protected - for panel users, viewers blocked from writes)
 	agents := api.Group("/agents")
@@ -92,14 +95,14 @@ func SetupRoutes(app *fiber.App) {
 	crowdsec.Delete("/alerts/:alertId", handlers.CrowdSecDeleteAlert)
 	crowdsec.Get("/collections", handlers.CrowdSecListCollections)
 	crowdsec.Post("/collections", handlers.CrowdSecInstallCollection)
-	crowdsec.Delete("/collections/:name", handlers.CrowdSecRemoveCollection)
+	crowdsec.Delete("/collections/*", handlers.CrowdSecRemoveCollection)
 	crowdsec.Get("/bouncers", handlers.CrowdSecListBouncers)
 	crowdsec.Post("/bouncers", handlers.CrowdSecInstallBouncer)
 	crowdsec.Delete("/bouncers/:name", handlers.CrowdSecRemoveBouncer)
 	crowdsec.Get("/metrics", handlers.CrowdSecGetMetrics)
 	crowdsec.Get("/whitelist", handlers.CrowdSecListWhitelist)
 	crowdsec.Post("/whitelist", handlers.CrowdSecAddWhitelist)
-	crowdsec.Delete("/whitelist/:ip", handlers.CrowdSecRemoveWhitelist)
+	crowdsec.Delete("/whitelist/*", handlers.CrowdSecRemoveWhitelist)
 
 	// Admin routes (protected, admin only)
 	admin := api.Group("/admin")
@@ -172,6 +175,8 @@ func SetupRoutes(app *fiber.App) {
 	dns.Post("/providers", handlers.AddDNSProvider)
 	dns.Get("/providers", handlers.ListDNSProviders)
 	dns.Delete("/providers/:id", handlers.DeleteDNSProvider)
+	dns.Post("/export", handlers.ExportDNSProviders)
+	dns.Post("/import", handlers.ImportDNSProviders)
 	dns.Get("/providers/:id/records", handlers.ListDNSRecords)
 	dns.Post("/providers/:id/records", handlers.CreateDNSRecord)
 	dns.Patch("/providers/:id/records/:recordId", handlers.UpdateDNSRecord)
@@ -185,7 +190,7 @@ func SetupRoutes(app *fiber.App) {
 	certs.Use(middleware.Auth, middleware.FlatRateLimit, middleware.RejectViewer)
 	certs.Get("/", handlers.ListCertificates)
 	certs.Post("/", limiter.New(limiter.Config{
-		Max:        5,
+		Max:        20,
 		Expiration: 1 * time.Hour,
 		KeyGenerator: func(c *fiber.Ctx) string {
 			userID, _ := c.Locals("user_id").(int)
@@ -193,7 +198,7 @@ func SetupRoutes(app *fiber.App) {
 		},
 		LimitReached: func(c *fiber.Ctx) error {
 			return c.Status(fiber.StatusTooManyRequests).JSON(fiber.Map{
-				"error": "Certificate issuance rate limit exceeded (5 per hour). Try again later.",
+				"error": "Certificate issuance rate limit exceeded (20 per hour). Try again later.",
 			})
 		},
 	}), handlers.IssueCertificate)

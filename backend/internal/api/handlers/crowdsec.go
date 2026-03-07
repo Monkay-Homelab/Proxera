@@ -2,7 +2,9 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net"
 	"strconv"
 
 	"github.com/gofiber/fiber/v2"
@@ -34,16 +36,20 @@ func CrowdSecStatus(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	command := models.AgentCommand{
-		Type:    "crowdsec_status",
-		Payload: map[string]interface{}{},
+	if IsLocalAgent(agentID) {
+		result, err := localAgent.CrowdSecStatus()
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		}
+		return c.JSON(result)
 	}
 
-	response, err := SendCommandAndWaitForResponse(agentID, command, CmdTimeoutDefault)
+	response, err := SendCommandAndWaitForResponse(agentID, models.AgentCommand{
+		Type: "crowdsec_status", Payload: map[string]interface{}{},
+	}, CmdTimeoutDefault)
 	if err != nil {
 		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": err.Error()})
 	}
-
 	return c.SendString(response)
 }
 
@@ -61,18 +67,19 @@ func CrowdSecInstall(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid request body"})
 	}
 
-	command := models.AgentCommand{
-		Type: "crowdsec_install",
-		Payload: map[string]interface{}{
-			"enrollment_key": body.EnrollmentKey,
-		},
+	if IsLocalAgent(agentID) {
+		if err := localAgent.CrowdSecInstall(body.EnrollmentKey); err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		}
+		return c.JSON(fiber.Map{"message": "CrowdSec installed successfully"})
 	}
 
-	response, err := SendCommandAndWaitForResponse(agentID, command, CmdTimeoutLong)
+	response, err := SendCommandAndWaitForResponse(agentID, models.AgentCommand{
+		Type: "crowdsec_install", Payload: map[string]interface{}{"enrollment_key": body.EnrollmentKey},
+	}, CmdTimeoutLong)
 	if err != nil {
 		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": err.Error()})
 	}
-
 	return c.JSON(fiber.Map{"message": response})
 }
 
@@ -83,16 +90,19 @@ func CrowdSecUninstall(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	command := models.AgentCommand{
-		Type:    "crowdsec_uninstall",
-		Payload: map[string]interface{}{},
+	if IsLocalAgent(agentID) {
+		if err := localAgent.CrowdSecUninstall(); err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		}
+		return c.JSON(fiber.Map{"message": "CrowdSec uninstalled successfully"})
 	}
 
-	response, err := SendCommandAndWaitForResponse(agentID, command, CmdTimeoutSlow)
+	response, err := SendCommandAndWaitForResponse(agentID, models.AgentCommand{
+		Type: "crowdsec_uninstall", Payload: map[string]interface{}{},
+	}, CmdTimeoutSlow)
 	if err != nil {
 		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": err.Error()})
 	}
-
 	return c.JSON(fiber.Map{"message": response})
 }
 
@@ -103,16 +113,20 @@ func CrowdSecListDecisions(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	command := models.AgentCommand{
-		Type:    "crowdsec_decisions_list",
-		Payload: map[string]interface{}{},
+	if IsLocalAgent(agentID) {
+		result, err := localAgent.CrowdSecListDecisions()
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		}
+		return c.JSON(result)
 	}
 
-	response, err := SendCommandAndWaitForResponse(agentID, command, CmdTimeoutDefault)
+	response, err := SendCommandAndWaitForResponse(agentID, models.AgentCommand{
+		Type: "crowdsec_decisions_list", Payload: map[string]interface{}{},
+	}, CmdTimeoutDefault)
 	if err != nil {
 		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": err.Error()})
 	}
-
 	return c.SendString(response)
 }
 
@@ -134,21 +148,28 @@ func CrowdSecAddDecision(c *fiber.Ctx) error {
 	if body.IP == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "IP is required"})
 	}
-
-	command := models.AgentCommand{
-		Type: "crowdsec_decisions_add",
-		Payload: map[string]interface{}{
-			"ip":       body.IP,
-			"duration": body.Duration,
-			"reason":   body.Reason,
-		},
+	if body.Duration == "" {
+		body.Duration = "24h"
+	}
+	if body.Reason == "" {
+		body.Reason = "Manual ban"
 	}
 
-	response, err := SendCommandAndWaitForResponse(agentID, command, CmdTimeoutDefault)
+	if IsLocalAgent(agentID) {
+		if err := localAgent.CrowdSecAddDecision(body.IP, body.Duration, body.Reason); err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		}
+		return c.JSON(fiber.Map{"message": "Decision added"})
+	}
+
+	response, err := SendCommandAndWaitForResponse(agentID, models.AgentCommand{
+		Type: "crowdsec_decisions_add", Payload: map[string]interface{}{
+			"ip": body.IP, "duration": body.Duration, "reason": body.Reason,
+		},
+	}, CmdTimeoutDefault)
 	if err != nil {
 		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": err.Error()})
 	}
-
 	return c.JSON(fiber.Map{"message": response})
 }
 
@@ -164,18 +185,19 @@ func CrowdSecDeleteDecision(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid decision ID"})
 	}
 
-	command := models.AgentCommand{
-		Type: "crowdsec_decisions_delete",
-		Payload: map[string]interface{}{
-			"id": decisionID,
-		},
+	if IsLocalAgent(agentID) {
+		if err := localAgent.CrowdSecDeleteDecision(decisionID); err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		}
+		return c.JSON(fiber.Map{"message": "Decision deleted"})
 	}
 
-	response, err := SendCommandAndWaitForResponse(agentID, command, CmdTimeoutDefault)
+	response, err := SendCommandAndWaitForResponse(agentID, models.AgentCommand{
+		Type: "crowdsec_decisions_delete", Payload: map[string]interface{}{"id": decisionID},
+	}, CmdTimeoutDefault)
 	if err != nil {
 		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": err.Error()})
 	}
-
 	return c.JSON(fiber.Map{"message": response})
 }
 
@@ -186,16 +208,20 @@ func CrowdSecListAlerts(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	command := models.AgentCommand{
-		Type:    "crowdsec_alerts_list",
-		Payload: map[string]interface{}{},
+	if IsLocalAgent(agentID) {
+		result, err := localAgent.CrowdSecListAlerts()
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		}
+		return c.JSON(result)
 	}
 
-	response, err := SendCommandAndWaitForResponse(agentID, command, CmdTimeoutDefault)
+	response, err := SendCommandAndWaitForResponse(agentID, models.AgentCommand{
+		Type: "crowdsec_alerts_list", Payload: map[string]interface{}{},
+	}, CmdTimeoutDefault)
 	if err != nil {
 		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": err.Error()})
 	}
-
 	return c.SendString(response)
 }
 
@@ -211,18 +237,19 @@ func CrowdSecDeleteAlert(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid alert ID"})
 	}
 
-	command := models.AgentCommand{
-		Type: "crowdsec_alerts_delete",
-		Payload: map[string]interface{}{
-			"id": alertID,
-		},
+	if IsLocalAgent(agentID) {
+		if err := localAgent.CrowdSecDeleteAlert(alertID); err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		}
+		return c.JSON(fiber.Map{"message": "Alert deleted"})
 	}
 
-	response, err := SendCommandAndWaitForResponse(agentID, command, CmdTimeoutDefault)
+	response, err := SendCommandAndWaitForResponse(agentID, models.AgentCommand{
+		Type: "crowdsec_alerts_delete", Payload: map[string]interface{}{"id": alertID},
+	}, CmdTimeoutDefault)
 	if err != nil {
 		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": err.Error()})
 	}
-
 	return c.JSON(fiber.Map{"message": response})
 }
 
@@ -233,16 +260,20 @@ func CrowdSecListCollections(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	command := models.AgentCommand{
-		Type:    "crowdsec_collections_list",
-		Payload: map[string]interface{}{},
+	if IsLocalAgent(agentID) {
+		result, err := localAgent.CrowdSecListCollections()
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		}
+		return c.JSON(result)
 	}
 
-	response, err := SendCommandAndWaitForResponse(agentID, command, CmdTimeoutDefault)
+	response, err := SendCommandAndWaitForResponse(agentID, models.AgentCommand{
+		Type: "crowdsec_collections_list", Payload: map[string]interface{}{},
+	}, CmdTimeoutDefault)
 	if err != nil {
 		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": err.Error()})
 	}
-
 	return c.SendString(response)
 }
 
@@ -260,18 +291,19 @@ func CrowdSecInstallCollection(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Collection name is required"})
 	}
 
-	command := models.AgentCommand{
-		Type: "crowdsec_collections_install",
-		Payload: map[string]interface{}{
-			"name": body.Name,
-		},
+	if IsLocalAgent(agentID) {
+		if err := localAgent.CrowdSecInstallCollection(body.Name); err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		}
+		return c.JSON(fiber.Map{"message": "Collection installed"})
 	}
 
-	response, err := SendCommandAndWaitForResponse(agentID, command, CmdTimeoutSlow)
+	response, err := SendCommandAndWaitForResponse(agentID, models.AgentCommand{
+		Type: "crowdsec_collections_install", Payload: map[string]interface{}{"name": body.Name},
+	}, CmdTimeoutSlow)
 	if err != nil {
 		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": err.Error()})
 	}
-
 	return c.JSON(fiber.Map{"message": response})
 }
 
@@ -282,23 +314,24 @@ func CrowdSecRemoveCollection(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	name := c.Params("name")
+	name := c.Params("*")
 	if name == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Collection name is required"})
 	}
 
-	command := models.AgentCommand{
-		Type: "crowdsec_collections_remove",
-		Payload: map[string]interface{}{
-			"name": name,
-		},
+	if IsLocalAgent(agentID) {
+		if err := localAgent.CrowdSecRemoveCollection(name); err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		}
+		return c.JSON(fiber.Map{"message": "Collection removed"})
 	}
 
-	response, err := SendCommandAndWaitForResponse(agentID, command, CmdTimeoutMedium)
+	response, err := SendCommandAndWaitForResponse(agentID, models.AgentCommand{
+		Type: "crowdsec_collections_remove", Payload: map[string]interface{}{"name": name},
+	}, CmdTimeoutMedium)
 	if err != nil {
 		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": err.Error()})
 	}
-
 	return c.JSON(fiber.Map{"message": response})
 }
 
@@ -309,16 +342,20 @@ func CrowdSecListBouncers(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	command := models.AgentCommand{
-		Type:    "crowdsec_bouncers_list",
-		Payload: map[string]interface{}{},
+	if IsLocalAgent(agentID) {
+		result, err := localAgent.CrowdSecListBouncers()
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		}
+		return c.JSON(result)
 	}
 
-	response, err := SendCommandAndWaitForResponse(agentID, command, CmdTimeoutDefault)
+	response, err := SendCommandAndWaitForResponse(agentID, models.AgentCommand{
+		Type: "crowdsec_bouncers_list", Payload: map[string]interface{}{},
+	}, CmdTimeoutDefault)
 	if err != nil {
 		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": err.Error()})
 	}
-
 	return c.SendString(response)
 }
 
@@ -336,18 +373,19 @@ func CrowdSecInstallBouncer(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Package name is required"})
 	}
 
-	command := models.AgentCommand{
-		Type: "crowdsec_bouncer_install",
-		Payload: map[string]interface{}{
-			"package": body.Package,
-		},
+	if IsLocalAgent(agentID) {
+		if err := localAgent.CrowdSecInstallBouncer(body.Package); err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		}
+		return c.JSON(fiber.Map{"message": "Bouncer installed"})
 	}
 
-	response, err := SendCommandAndWaitForResponse(agentID, command, CmdTimeoutLong)
+	response, err := SendCommandAndWaitForResponse(agentID, models.AgentCommand{
+		Type: "crowdsec_bouncer_install", Payload: map[string]interface{}{"package": body.Package},
+	}, CmdTimeoutLong)
 	if err != nil {
 		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": err.Error()})
 	}
-
 	return c.JSON(fiber.Map{"message": response})
 }
 
@@ -363,18 +401,19 @@ func CrowdSecRemoveBouncer(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Package name is required"})
 	}
 
-	command := models.AgentCommand{
-		Type: "crowdsec_bouncer_remove",
-		Payload: map[string]interface{}{
-			"package": name,
-		},
+	if IsLocalAgent(agentID) {
+		if err := localAgent.CrowdSecRemoveBouncer(name); err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		}
+		return c.JSON(fiber.Map{"message": "Bouncer removed"})
 	}
 
-	response, err := SendCommandAndWaitForResponse(agentID, command, CmdTimeoutSlow)
+	response, err := SendCommandAndWaitForResponse(agentID, models.AgentCommand{
+		Type: "crowdsec_bouncer_remove", Payload: map[string]interface{}{"package": name},
+	}, CmdTimeoutSlow)
 	if err != nil {
 		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": err.Error()})
 	}
-
 	return c.JSON(fiber.Map{"message": response})
 }
 
@@ -385,16 +424,20 @@ func CrowdSecGetMetrics(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	command := models.AgentCommand{
-		Type:    "crowdsec_metrics",
-		Payload: map[string]interface{}{},
+	if IsLocalAgent(agentID) {
+		result, err := localAgent.CrowdSecGetMetrics()
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		}
+		return c.SendString(result)
 	}
 
-	response, err := SendCommandAndWaitForResponse(agentID, command, CmdTimeoutDefault)
+	response, err := SendCommandAndWaitForResponse(agentID, models.AgentCommand{
+		Type: "crowdsec_metrics", Payload: map[string]interface{}{},
+	}, CmdTimeoutDefault)
 	if err != nil {
 		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": err.Error()})
 	}
-
 	return c.SendString(response)
 }
 
@@ -405,16 +448,20 @@ func CrowdSecListWhitelist(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	command := models.AgentCommand{
-		Type:    "crowdsec_whitelist_list",
-		Payload: map[string]interface{}{},
+	if IsLocalAgent(agentID) {
+		result, err := localAgent.CrowdSecListWhitelists()
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		}
+		return c.JSON(result)
 	}
 
-	response, err := SendCommandAndWaitForResponse(agentID, command, CmdTimeoutDefault)
+	response, err := SendCommandAndWaitForResponse(agentID, models.AgentCommand{
+		Type: "crowdsec_whitelist_list", Payload: map[string]interface{}{},
+	}, CmdTimeoutDefault)
 	if err != nil {
 		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": err.Error()})
 	}
-
 	return c.SendString(response)
 }
 
@@ -432,20 +479,27 @@ func CrowdSecAddWhitelist(c *fiber.Ctx) error {
 	if err := c.BodyParser(&body); err != nil || body.IP == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "IP is required"})
 	}
-
-	command := models.AgentCommand{
-		Type: "crowdsec_whitelist_add",
-		Payload: map[string]interface{}{
-			"ip":          body.IP,
-			"description": body.Description,
-		},
+	if net.ParseIP(body.IP) == nil {
+		if _, _, err := net.ParseCIDR(body.IP); err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid IP address or CIDR"})
+		}
 	}
 
-	response, err := SendCommandAndWaitForResponse(agentID, command, CmdTimeoutDefault)
+	if IsLocalAgent(agentID) {
+		if err := localAgent.CrowdSecAddWhitelist(body.IP, body.Description); err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		}
+		return c.JSON(fiber.Map{"message": "IP whitelisted"})
+	}
+
+	response, err := SendCommandAndWaitForResponse(agentID, models.AgentCommand{
+		Type: "crowdsec_whitelist_add", Payload: map[string]interface{}{
+			"ip": body.IP, "description": body.Description,
+		},
+	}, CmdTimeoutDefault)
 	if err != nil {
 		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": err.Error()})
 	}
-
 	return c.JSON(fiber.Map{"message": response})
 }
 
@@ -456,22 +510,29 @@ func CrowdSecRemoveWhitelist(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	ip := c.Params("ip")
+	ip := c.Params("*")
 	if ip == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "IP is required"})
 	}
 
-	command := models.AgentCommand{
-		Type: "crowdsec_whitelist_remove",
-		Payload: map[string]interface{}{
-			"ip": ip,
-		},
+	if IsLocalAgent(agentID) {
+		if err := localAgent.CrowdSecRemoveWhitelist(ip); err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		}
+		return c.JSON(fiber.Map{"message": "IP removed from whitelist"})
 	}
 
-	response, err := SendCommandAndWaitForResponse(agentID, command, CmdTimeoutDefault)
+	response, err := SendCommandAndWaitForResponse(agentID, models.AgentCommand{
+		Type: "crowdsec_whitelist_remove", Payload: map[string]interface{}{"ip": ip},
+	}, CmdTimeoutDefault)
 	if err != nil {
 		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": err.Error()})
 	}
-
 	return c.JSON(fiber.Map{"message": response})
+}
+
+// jsonStr marshals a value to a JSON string for WebSocket responses
+func jsonStr(v interface{}) string {
+	b, _ := json.Marshal(v)
+	return string(b)
 }

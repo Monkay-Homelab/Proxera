@@ -31,6 +31,7 @@ type HostAdvancedConfig struct {
 	RedirectOnly         bool                   `json:"redirect_only,omitempty"`
 	HTTPProxy            *bool                  `json:"http_proxy,omitempty"`
 	TrustedProxies       []string               `json:"trusted_proxies,omitempty"`
+	CloudflareRealIP     bool                   `json:"cloudflare_real_ip,omitempty"`
 }
 
 type BasicAuthConfig struct {

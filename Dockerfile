@@ -51,13 +51,10 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
     -o /proxera-linux-arm64 ./cmd/proxera/main.go
 
 # --- Stage 4: Final image ---
-FROM debian:bookworm-slim
+FROM alpine:3.21
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates curl docker.io && \
-    rm -rf /var/lib/apt/lists/*
-
-RUN mkdir -p /etc/nginx/ssl /etc/nginx/conf.d /var/log/nginx /var/lib/proxera
+RUN apk add --no-cache ca-certificates curl docker-cli && \
+    mkdir -p /etc/nginx/ssl /etc/nginx/conf.d /var/log/nginx /var/lib/proxera
 
 WORKDIR /app
 COPY --from=go-builder /proxera-control .
@@ -65,5 +62,5 @@ COPY --from=agent-builder /proxera-linux-amd64 ./downloads/
 COPY --from=agent-builder /proxera-linux-arm64 ./downloads/
 COPY backend/install.sh ./install.sh
 
-EXPOSE 8080
+EXPOSE 5173
 ENTRYPOINT ["./proxera-control"]

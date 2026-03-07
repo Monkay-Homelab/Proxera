@@ -3,7 +3,6 @@ package crowdsec
 import (
 	"encoding/json"
 	"fmt"
-	"os/exec"
 	"strconv"
 )
 
@@ -36,8 +35,7 @@ type Alert struct {
 
 // ListAlerts returns all alerts
 func (m *Manager) ListAlerts() ([]Alert, error) {
-	cmd := exec.Command("cscli", "alerts", "list", "-o", "json")
-	output, err := cmd.CombinedOutput()
+	output, err := m.runCscliCmd("alerts", "list", "-o", "json")
 	if err != nil {
 		return []Alert{}, nil
 	}
@@ -54,10 +52,9 @@ func (m *Manager) ListAlerts() ([]Alert, error) {
 
 // DeleteAlert removes an alert by ID
 func (m *Manager) DeleteAlert(id int) error {
-	cmd := exec.Command("cscli", "alerts", "delete", "--id", strconv.Itoa(id))
-	output, err := cmd.CombinedOutput()
+	_, err := m.runCscliCmd("alerts", "delete", "--id", strconv.Itoa(id))
 	if err != nil {
-		return fmt.Errorf("failed to delete alert: %s", string(output))
+		return fmt.Errorf("failed to delete alert: %v", err)
 	}
 	return nil
 }

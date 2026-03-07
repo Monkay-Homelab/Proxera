@@ -7,6 +7,7 @@ import (
 	"log"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/proxera/agent/pkg/types"
 	"github.com/proxera/backend/internal/crypto"
 	"github.com/proxera/backend/internal/database"
 	"github.com/proxera/backend/internal/models"
@@ -76,6 +77,47 @@ func buildHostPayload(userID int, domain, upstreamURL string, ssl, websocket boo
 	return payload, nil
 }
 
+// payloadToHost converts a deploy payload map to a types.Host for local agent dispatch.
+func payloadToHost(payload map[string]interface{}) types.Host {
+	h := types.Host{
+		Domain:      stringVal(payload, "domain"),
+		UpstreamURL: stringVal(payload, "upstream_url"),
+		SSL:         boolVal(payload, "ssl"),
+		WebSocket:   boolVal(payload, "websocket"),
+		CertPEM:     stringVal(payload, "cert_pem"),
+		KeyPEM:      stringVal(payload, "key_pem"),
+		IssuerPEM:   stringVal(payload, "issuer_pem"),
+	}
+	if configRaw, ok := payload["config"]; ok && configRaw != nil {
+		configJSON, err := json.Marshal(configRaw)
+		if err == nil {
+			var cfg types.AdvancedConfig
+			if json.Unmarshal(configJSON, &cfg) == nil {
+				h.Config = &cfg
+			}
+		}
+	}
+	return h
+}
+
+func stringVal(m map[string]interface{}, key string) string {
+	if v, ok := m[key]; ok {
+		if s, ok := v.(string); ok {
+			return s
+		}
+	}
+	return ""
+}
+
+func boolVal(m map[string]interface{}, key string) bool {
+	if v, ok := m[key]; ok {
+		if b, ok := v.(bool); ok {
+			return b
+		}
+	}
+	return false
+}
+
 // deployHostToAgent sends an apply_host command to the specified agent
 func deployHostToAgent(userID, agentDBID int, domain, upstreamURL string, ssl, websocket bool, certID *int, config *HostAdvancedConfig) error {
 	agentStringID, err := lookupAgentStringID(agentDBID)
@@ -86,6 +128,16 @@ func deployHostToAgent(userID, agentDBID int, domain, upstreamURL string, ssl, w
 	payload, err := buildHostPayload(userID, domain, upstreamURL, ssl, websocket, certID, config)
 	if err != nil {
 		return err
+	}
+
+	// Local agent: dispatch directly
+	if IsLocalAgent(agentStringID) {
+		host := payloadToHost(payload)
+		if err := localAgent.ApplyHost(host); err != nil {
+			return fmt.Errorf("deploy failed: %w", err)
+		}
+		log.Printf("[Deploy] Host %s deployed to local agent", domain)
+		return nil
 	}
 
 	command := models.AgentCommand{
@@ -107,6 +159,15 @@ func removeHostFromAgent(agentDBID int, domain string) error {
 	agentStringID, err := lookupAgentStringID(agentDBID)
 	if err != nil {
 		return err
+	}
+
+	// Local agent: dispatch directly
+	if IsLocalAgent(agentStringID) {
+		if err := localAgent.RemoveHost(domain); err != nil {
+			return fmt.Errorf("remove failed: %w", err)
+		}
+		log.Printf("[Deploy] Host %s removed from local agent", domain)
+		return nil
 	}
 
 	command := models.AgentCommand{
@@ -182,6 +243,23 @@ func DeployAllToAgent(c *fiber.Ctx) error {
 		log.Printf("[Deploy] Error iterating hosts for agent %s: %v", agentID, err)
 	}
 
+	// Local agent: dispatch directly
+	if IsLocalAgent(agentID) {
+		var typedHosts []types.Host
+		for _, payload := range hosts {
+			typedHosts = append(typedHosts, payloadToHost(payload))
+		}
+		applied, err := localAgent.ApplyAll(typedHosts)
+		if err != nil {
+			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
+				"error": fmt.Sprintf("Deploy failed: %v", err),
+			})
+		}
+		return c.JSON(fiber.Map{
+			"message": fmt.Sprintf("Deployed %d host(s) to local agent", applied),
+		})
+	}
+
 	command := models.AgentCommand{
 		Type: "apply",
 		Payload: map[string]interface{}{
@@ -215,6 +293,18 @@ func ReloadAgent(c *fiber.Ctx) error {
 	).Scan(&id)
 	if err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Agent not found"})
+	}
+
+	// Local agent: dispatch directly
+	if IsLocalAgent(agentID) {
+		if err := localAgent.Reload(); err != nil {
+			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
+				"error": fmt.Sprintf("Reload failed: %v", err),
+			})
+		}
+		return c.JSON(fiber.Map{
+			"message": "Nginx reloaded successfully",
+		})
 	}
 
 	command := models.AgentCommand{

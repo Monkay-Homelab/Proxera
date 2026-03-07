@@ -33,8 +33,13 @@ const (
 )
 
 // EnsureLogRotation ensures a logrotate config exists for Proxera-managed nginx logs.
-// Skips if the file exists and is recent enough.
+// Skips if the file exists and is recent enough, or if running in Docker mode.
 func (d *Deployer) EnsureLogRotation() error {
+	// In Docker mode, log rotation is handled by the container runtime
+	if os.Getenv("PROXERA_DOCKER") == "true" {
+		return nil
+	}
+
 	info, err := os.Stat(logrotatePath)
 	if err == nil && time.Since(info.ModTime()) < logrotateMaxAge {
 		return nil

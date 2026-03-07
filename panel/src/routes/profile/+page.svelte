@@ -18,6 +18,93 @@
 	let confirmPassword = $state('');
 	let changingPassword = $state(false);
 
+	// API Keys
+	interface APIKey {
+		id: number;
+		name: string;
+		prefix: string;
+		last_used_at: string | null;
+		expires_at: string | null;
+		created_at: string;
+	}
+	let apiKeys = $state<APIKey[]>([]);
+	let newKeyName = $state('');
+	let newKeyExpiry = $state('never');
+	let creatingKey = $state(false);
+	let revealedKey = $state<string | null>(null);
+	let copiedKey = $state(false);
+
+	async function fetchAPIKeys() {
+		try {
+			const res = await api('/api/user/api-keys');
+			if (res.ok) apiKeys = await res.json();
+		} catch {}
+	}
+
+	async function createAPIKey() {
+		if (!newKeyName.trim()) { toastError('Name is required'); return; }
+		creatingKey = true;
+		try {
+			const res = await api('/api/user/api-keys', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ name: newKeyName.trim(), expires_in: newKeyExpiry })
+			});
+			const data = await res.json();
+			if (!res.ok) throw new Error(data.error || 'Failed to create key');
+			revealedKey = data.key;
+			copiedKey = false;
+			newKeyName = '';
+			newKeyExpiry = 'never';
+			await fetchAPIKeys();
+			toastSuccess('API key created');
+		} catch (err: any) {
+			toastError(err.message);
+		} finally {
+			creatingKey = false;
+		}
+	}
+
+	async function revokeKey(id: number, name: string) {
+		if (!await confirmDialog(`Revoke API key "${name}"? Any integrations using this key will stop working.`, {
+			title: 'Revoke API Key', confirmLabel: 'Revoke', danger: true
+		})) return;
+		try {
+			const res = await api(`/api/user/api-keys/${id}`, { method: 'DELETE' });
+			if (!res.ok) { const d = await res.json(); throw new Error(d.error); }
+			toastSuccess('API key revoked');
+			await fetchAPIKeys();
+		} catch (err: any) {
+			toastError(err.message || 'Failed to revoke key');
+		}
+	}
+
+	function copyKey() {
+		if (revealedKey) {
+			navigator.clipboard.writeText(revealedKey);
+			copiedKey = true;
+			setTimeout(() => copiedKey = false, 2000);
+		}
+	}
+
+	function formatRelative(dateStr: string | null): string {
+		if (!dateStr) return 'Never';
+		const d = new Date(dateStr);
+		const now = new Date();
+		const diff = now.getTime() - d.getTime();
+		if (diff < 60000) return 'Just now';
+		if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
+		if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
+		return d.toLocaleDateString();
+	}
+
+	function formatExpiry(dateStr: string | null): string {
+		if (!dateStr) return 'Never';
+		const d = new Date(dateStr);
+		if (d < new Date()) return 'Expired';
+		return d.toLocaleDateString();
+	}
+
 	async function handleChangePassword() {
 		if (!currentPassword || !newPassword || !confirmPassword) {
 			toastError('All password fields are required');
@@ -58,6 +145,7 @@
 				throw new Error('Not authenticated');
 			}
 			user = await response.json();
+			fetchAPIKeys();
 		} catch (err) {
 			toastError('Failed to load profile');
 		} finally {
@@ -199,6 +287,79 @@
 			</div>
 		</div>
 
+		<div class="panel api-keys-panel">
+			<div class="details">
+				<span class="section-label">API Keys</span>
+				<p class="section-desc">Use API keys to authenticate with the Proxera API. Keys inherit your account's role and permissions.</p>
+
+				{#if revealedKey}
+					<div class="key-reveal">
+						<div class="key-reveal-header">
+							<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+								<path d="M12 9v4m0 4h.01M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"/>
+							</svg>
+							<span>Copy your API key now — it won't be shown again.</span>
+						</div>
+						<div class="key-reveal-row">
+							<code class="key-value">{revealedKey}</code>
+							<button class="btn-copy" onclick={copyKey}>
+								{copiedKey ? 'Copied!' : 'Copy'}
+							</button>
+						</div>
+						<button class="btn-ghost btn-sm" onclick={() => revealedKey = null}>Dismiss</button>
+					</div>
+				{/if}
+
+				<div class="key-create">
+					<input
+						class="input"
+						type="text"
+						placeholder="Key name (e.g. CI/CD, monitoring)"
+						bind:value={newKeyName}
+						disabled={creatingKey}
+						onkeydown={(e) => e.key === 'Enter' && createAPIKey()}
+					/>
+					<select class="input select-sm" bind:value={newKeyExpiry} disabled={creatingKey}>
+						<option value="never">No expiration</option>
+						<option value="30d">30 days</option>
+						<option value="90d">90 days</option>
+						<option value="365d">1 year</option>
+					</select>
+					<button class="btn-fill" onclick={createAPIKey} disabled={creatingKey || !newKeyName.trim()}>
+						{#if creatingKey}
+							<span class="spinner-accent"></span> Creating...
+						{:else}
+							Generate Key
+						{/if}
+					</button>
+				</div>
+
+				{#if apiKeys.length > 0}
+					<div class="key-list">
+						{#each apiKeys as key}
+							<div class="key-item">
+								<div class="key-info">
+									<span class="key-name">{key.name}</span>
+									<span class="key-meta">
+										<code class="key-prefix">{key.prefix}...</code>
+										<span class="sep">·</span>
+										Created {formatRelative(key.created_at)}
+										<span class="sep">·</span>
+										Last used: {formatRelative(key.last_used_at)}
+										<span class="sep">·</span>
+										Expires: {formatExpiry(key.expires_at)}
+									</span>
+								</div>
+								<button class="btn-delete btn-sm" onclick={() => revokeKey(key.id, key.name)}>Revoke</button>
+							</div>
+						{/each}
+					</div>
+				{:else}
+					<p class="no-keys">No API keys yet.</p>
+				{/if}
+			</div>
+		</div>
+
 		<div class="danger-zone">
 			<div class="danger-row">
 				<div class="danger-icon">
@@ -314,6 +475,71 @@
 		animation: spin 0.6s linear infinite;
 	}
 
+	/* ── API Keys ── */
+	.api-keys-panel { margin-top: 1.5rem; }
+	.section-desc {
+		font-size: var(--text-xs); color: var(--text-tertiary);
+		margin: -0.5rem 0 1rem; line-height: 1.5;
+	}
+	.key-create {
+		display: flex; gap: 0.5rem; margin-bottom: 1rem; align-items: center;
+	}
+	.key-create .input:first-child { flex: 1; }
+	.select-sm {
+		width: auto; min-width: 140px;
+		appearance: auto;
+	}
+	.key-list { display: flex; flex-direction: column; gap: 0.5rem; }
+	.key-item {
+		display: flex; align-items: center; justify-content: space-between;
+		padding: 0.75rem 1rem; gap: 1rem;
+		background: var(--surface-raised); border: 1px solid var(--border);
+		border-radius: var(--radius);
+	}
+	.key-info { display: flex; flex-direction: column; gap: 0.25rem; min-width: 0; }
+	.key-name { font-weight: 600; font-size: var(--text-sm); color: var(--text-primary); }
+	.key-meta {
+		font-size: var(--text-xs); color: var(--text-tertiary);
+		display: flex; flex-wrap: wrap; gap: 0.25rem; align-items: center;
+	}
+	.key-prefix {
+		font-family: var(--font-mono); font-size: var(--text-xs);
+		background: var(--surface); padding: 0.1rem 0.35rem;
+		border-radius: 3px; border: 1px solid var(--border);
+	}
+	.sep { opacity: 0.4; }
+	.no-keys {
+		font-size: var(--text-sm); color: var(--text-tertiary);
+		text-align: center; padding: 1.5rem 0; margin: 0;
+	}
+	.btn-sm { padding: 0.35rem 0.75rem; font-size: var(--text-xs); }
+
+	.key-reveal {
+		background: var(--info-dim); border: 1px solid var(--info);
+		border-radius: var(--radius); padding: 1rem;
+		margin-bottom: 1rem; display: flex; flex-direction: column; gap: 0.75rem;
+	}
+	.key-reveal-header {
+		display: flex; align-items: center; gap: 0.5rem;
+		font-size: var(--text-xs); font-weight: 600; color: var(--info);
+	}
+	.key-reveal-row {
+		display: flex; gap: 0.5rem; align-items: center;
+	}
+	.key-value {
+		flex: 1; font-family: var(--font-mono); font-size: var(--text-xs);
+		background: var(--surface); padding: 0.5rem 0.75rem;
+		border-radius: var(--radius); border: 1px solid var(--border);
+		word-break: break-all; color: var(--text-primary);
+	}
+	.btn-copy {
+		padding: 0.5rem 1rem; border-radius: var(--radius);
+		font-size: var(--text-xs); font-weight: 600; white-space: nowrap;
+		color: #fff; background: var(--info); border: none;
+		cursor: pointer; transition: opacity var(--transition);
+	}
+	.btn-copy:hover { opacity: 0.85; }
+
 	/* ── Danger Zone ── */
 	.danger-zone {
 		margin-top: 2rem;
@@ -405,5 +631,9 @@
 		.confirm-row { flex-direction: column; }
 		.confirm-row .confirm-input { width: 100%; }
 		.confirm-row .btn-ghost, .confirm-row .btn-destroy { width: 100%; justify-content: center; }
+		.key-create { flex-direction: column; }
+		.key-create .input:first-child, .select-sm { width: 100%; }
+		.key-item { flex-direction: column; align-items: flex-start; }
+		.key-reveal-row { flex-direction: column; }
 	}
 </style>

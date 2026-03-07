@@ -452,6 +452,13 @@ func UpdateAgent(c *fiber.Ctx) error {
 		})
 	}
 
+	// Local agent updates with the control node binary
+	if IsLocalAgent(agentID) {
+		return c.JSON(fiber.Map{
+			"message": "Local agent updates automatically with the control node",
+		})
+	}
+
 	// Send update command to agent via WebSocket
 	command := models.AgentCommand{
 		Type: "update",
@@ -487,6 +494,13 @@ func UpgradeAgentNginx(c *fiber.Ctx) error {
 		})
 	}
 
+	// Local agent: nginx is managed externally (e.g. Docker container)
+	if IsLocalAgent(agentID) {
+		return c.JSON(fiber.Map{
+			"message": "Local agent nginx is managed externally",
+		})
+	}
+
 	command := models.AgentCommand{
 		Type:    "upgrade_nginx",
 		Payload: map[string]interface{}{},
@@ -517,6 +531,19 @@ func GetAgentLogs(c *fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
 			"error": "Agent not found",
+		})
+	}
+
+	// Local agent: get logs directly
+	if IsLocalAgent(agentID) {
+		logs, err := localAgent.GetNginxLogs(100)
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"error": err.Error(),
+			})
+		}
+		return c.JSON(fiber.Map{
+			"logs": logs,
 		})
 	}
 

@@ -12,15 +12,18 @@ services:
     env_file: .env
     environment:
       DB_HOST: postgres
+      API_PORT: "5173"
       PROXERA_DOCKER: "true"
       NGINX_RELOAD_CMD: "docker kill -s HUP project-nginx-1"
       NGINX_TEST_CMD: "docker exec project-nginx-1 nginx -t"
+      CROWDSEC_CONTAINER: "project-crowdsec-1"
     ports:
-      - "${API_PORT:-8080}:8080"
+      - "${PROXERA_PORT:-5173}:5173"
     volumes:
       - nginx-conf:/etc/nginx/conf.d
       - nginx-ssl:/etc/nginx/ssl
       - nginx-logs:/var/log/nginx
+      - acme-challenge:/var/www/proxera-acme
       - proxera-data:/var/lib/proxera
       - agent-downloads:/app/downloads
       - /var/run/docker.sock:/var/run/docker.sock
@@ -52,6 +55,7 @@ services:
       - nginx-conf:/etc/nginx/conf.d
       - nginx-ssl:/etc/nginx/ssl
       - nginx-logs:/var/log/nginx
+      - acme-challenge:/var/www/proxera-acme
     depends_on:
       - proxera
 
@@ -66,14 +70,13 @@ services:
       - crowdsec-data:/var/lib/crowdsec/data
     depends_on:
       - nginx
-    profiles:
-      - crowdsec
 
 volumes:
   pgdata:
   nginx-conf:
   nginx-ssl:
   nginx-logs:
+  acme-challenge:
   proxera-data:
   agent-downloads:
   crowdsec-config:

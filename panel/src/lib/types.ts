@@ -77,6 +77,7 @@ export interface AdvancedConfig {
 	access_log?: boolean;
 	server_aliases?: string[];
 	redirect_only?: boolean;
+	cloudflare_real_ip?: boolean;
 }
 
 export interface DnsProvider {

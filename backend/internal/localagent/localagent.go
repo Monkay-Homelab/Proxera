@@ -5,7 +5,10 @@ package localagent
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -27,6 +30,10 @@ import (
 // Set by the control node main.go to point to handlers.InsertMetricsBuckets.
 type MetricsInsertFunc func(agentID string, buckets []interface{}) error
 
+// DDNSUpdateFunc is a callback for updating DNS records when the agent's WAN IP changes.
+// Set by the control node main.go to point to handlers.UpdateDDNSForAgent.
+type DDNSUpdateFunc func(agentDBID int, agentUserID int, newWanIP string)
+
 // Manager provides direct access to agent functionality for the local node.
 type Manager struct {
 	agentID   string
@@ -34,9 +41,14 @@ type Manager struct {
 	deployer  *deploy.Deployer
 	collector *metrics.Collector
 	crowdsec  *crowdsec.Manager
+	logDir    string
+	isDocker  bool
 
+	bouncerSync     *crowdsec.BouncerSync
 	metricsInterval time.Duration
 	metricsInsert   MetricsInsertFunc
+	ddnsUpdate      DDNSUpdateFunc
+	lastWanIP       string
 	stopCh          chan struct{}
 	wg              sync.WaitGroup
 }
@@ -125,13 +137,22 @@ func New(cfg Config) *Manager {
 	}
 	deployer := deploy.NewDeployer(nginxMgr, cfg.NginxConfigPath, cfg.NginxEnabledPath)
 	collector := metrics.NewCollector(cfg.NginxLogDir)
-	csMgr := crowdsec.NewManager()
+	csMgr := crowdsec.NewManager(os.Getenv("CROWDSEC_CONTAINER"))
+
+	// In Docker mode, start a bouncer sync that generates nginx geo blocklist
+	var bs *crowdsec.BouncerSync
+	if csMgr.IsDocker() {
+		bs = crowdsec.NewBouncerSync(csMgr, cfg.NginxConfigPath, nginxMgr.Test, nginxMgr.Reload)
+	}
 
 	return &Manager{
 		nginxMgr:         nginxMgr,
 		deployer:         deployer,
 		collector:        collector,
 		crowdsec:         csMgr,
+		logDir:           cfg.NginxLogDir,
+		isDocker:         os.Getenv("PROXERA_DOCKER") == "true",
+		bouncerSync:      bs,
 		metricsInterval:  cfg.MetricsInterval,
 		stopCh:           make(chan struct{}),
 	}
@@ -179,11 +200,14 @@ func (m *Manager) RegisterLocalAgent() (string, error) {
 	return agentID, nil
 }
 
-// Start begins the local agent background tasks (heartbeat, metrics collection).
+// Start begins the local agent background tasks (heartbeat, metrics collection, bouncer sync).
 func (m *Manager) Start() {
 	m.wg.Add(2)
 	go m.heartbeatLoop()
 	go m.metricsLoop()
+	if m.bouncerSync != nil {
+		m.bouncerSync.Start()
+	}
 	log.Println("[local-agent] Started local agent manager")
 }
 
@@ -191,6 +215,9 @@ func (m *Manager) Start() {
 func (m *Manager) Stop() {
 	close(m.stopCh)
 	m.wg.Wait()
+	if m.bouncerSync != nil {
+		m.bouncerSync.Stop()
+	}
 	log.Println("[local-agent] Stopped local agent manager")
 }
 
@@ -199,7 +226,7 @@ func (m *Manager) heartbeatLoop() {
 	defer m.wg.Done()
 
 	m.sendHeartbeat()
-	ticker := time.NewTicker(60 * time.Second)
+	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 
 	for {
@@ -220,6 +247,23 @@ func (m *Manager) sendHeartbeat() {
 	hostCount := m.countDeployedHosts()
 	nginxVer := nginx.DetectNginxVersion()
 	csInstalled := m.crowdsec != nil && m.crowdsec.IsInstalled()
+	lanIP := getOutboundIP()
+	wanIP := getPublicIP()
+
+	// Check for WAN IP change and trigger DDNS update
+	if wanIP != "" && wanIP != m.lastWanIP && m.lastWanIP != "" && m.ddnsUpdate != nil {
+		log.Printf("[local-agent] WAN IP changed: %s -> %s, triggering DDNS update", m.lastWanIP, wanIP)
+		var agentDBID, agentUserID int
+		err := database.DB.QueryRow(context.Background(),
+			`SELECT id, user_id FROM agents WHERE agent_id = $1`, m.agentID,
+		).Scan(&agentDBID, &agentUserID)
+		if err == nil {
+			go m.ddnsUpdate(agentDBID, agentUserID, wanIP)
+		}
+	}
+	if wanIP != "" {
+		m.lastWanIP = wanIP
+	}
 
 	ctx := context.Background()
 	_, err := database.DB.Exec(ctx,
@@ -231,14 +275,59 @@ func (m *Manager) sendHeartbeat() {
 			arch = $4,
 			nginx_version = $5,
 			crowdsec_installed = $6,
+			lan_ip = $7,
+			wan_ip = $8,
+			ip_address = $7,
+			last_seen = NOW(),
 			last_heartbeat = NOW(),
 			updated_at = NOW()
-		 WHERE agent_id = $7`,
-		hostCount, version.Version, runtime.GOOS, runtime.GOARCH, nginxVer, csInstalled, m.agentID,
+		 WHERE agent_id = $9`,
+		hostCount, version.Version, runtime.GOOS, runtime.GOARCH, nginxVer, csInstalled, lanIP, wanIP, m.agentID,
 	)
 	if err != nil {
 		log.Printf("[local-agent] heartbeat update failed: %v", err)
 	}
+}
+
+// getOutboundIP gets the preferred outbound IP of this machine (LAN IP).
+func getOutboundIP() string {
+	conn, err := net.Dial("udp", "8.8.8.8:80")
+	if err != nil {
+		return ""
+	}
+	defer conn.Close()
+	return conn.LocalAddr().(*net.UDPAddr).IP.String()
+}
+
+// getPublicIP gets the public/WAN IP by querying an external service.
+func getPublicIP() string {
+	client := &http.Client{Timeout: 5 * time.Second}
+	services := []string{
+		"https://api.ipify.org",
+		"https://icanhazip.com",
+		"https://ifconfig.me/ip",
+	}
+	for _, svc := range services {
+		resp, err := client.Get(svc)
+		if err != nil {
+			continue
+		}
+		if resp.StatusCode == 200 {
+			body := make([]byte, 64)
+			n, err := resp.Body.Read(body)
+			resp.Body.Close()
+			if err != nil && err != io.EOF {
+				continue
+			}
+			ip := strings.TrimSpace(string(body[:n]))
+			if net.ParseIP(ip) != nil {
+				return ip
+			}
+		} else {
+			resp.Body.Close()
+		}
+	}
+	return ""
 }
 
 func (m *Manager) countDeployedHosts() int {
@@ -299,6 +388,11 @@ func (m *Manager) SetMetricsInsert(fn MetricsInsertFunc) {
 	m.metricsInsert = fn
 }
 
+// SetDDNSUpdate sets the callback function for DDNS updates when WAN IP changes.
+func (m *Manager) SetDDNSUpdate(fn DDNSUpdateFunc) {
+	m.ddnsUpdate = fn
+}
+
 // --- Command execution (direct function calls, no WebSocket) ---
 
 // ApplyHost deploys a host configuration to the local nginx.
@@ -332,16 +426,27 @@ func (m *Manager) GetNginxLogs(lines int) (string, error) {
 	if lines > 1000 {
 		lines = 1000
 	}
-	cmd := exec.Command("tail", "-n", fmt.Sprintf("%d", lines), "/var/log/nginx/crowdsec_access.log")
+	logPath := filepath.Join(m.logDir, "crowdsec_access.log")
+	cmd := exec.Command("tail", "-n", fmt.Sprintf("%d", lines), logPath)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return "", fmt.Errorf("failed to read nginx logs: %w", err)
+		// Fall back to default access.log
+		logPath = filepath.Join(m.logDir, "access.log")
+		cmd = exec.Command("tail", "-n", fmt.Sprintf("%d", lines), logPath)
+		output, err = cmd.CombinedOutput()
+		if err != nil {
+			return "", fmt.Errorf("failed to read nginx logs: %w", err)
+		}
 	}
 	return string(output), nil
 }
 
 // GetSystemLogs retrieves recent system logs for the proxera service.
 func (m *Manager) GetSystemLogs() (string, error) {
+	if m.isDocker {
+		// In Docker mode, there's no systemd journal — return container stdout logs
+		return "System logs are not available in Docker mode. Use 'docker logs' to view container output.", nil
+	}
 	cmd := exec.Command("journalctl", "-u", "proxera", "-n", "100", "--no-pager")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -447,10 +552,22 @@ func DetectSystem() SystemStatus {
 	}
 
 	// Check CrowdSec
-	if _, err := exec.LookPath("cscli"); err == nil {
-		s.CrowdSecInstalled = true
-		cmd := exec.Command("systemctl", "is-active", "--quiet", "crowdsec")
-		s.CrowdSecRunning = cmd.Run() == nil
+	if isDocker {
+		if container := os.Getenv("CROWDSEC_CONTAINER"); container != "" {
+			// Check if container exists
+			if exec.Command("docker", "inspect", container).Run() == nil {
+				s.CrowdSecInstalled = true
+				// Check if container is running
+				out, err := exec.Command("docker", "inspect", "-f", "{{.State.Running}}", container).Output()
+				s.CrowdSecRunning = err == nil && strings.TrimSpace(string(out)) == "true"
+			}
+		}
+	} else {
+		if _, err := exec.LookPath("cscli"); err == nil {
+			s.CrowdSecInstalled = true
+			cmd := exec.Command("systemctl", "is-active", "--quiet", "crowdsec")
+			s.CrowdSecRunning = cmd.Run() == nil
+		}
 	}
 
 	return s
