@@ -43,6 +43,7 @@
 		ip_allowlist: [],
 		ip_blocklist: [],
 		trusted_proxies: [],
+		cloudflare_real_ip: false,
 		http_proxy: false,
 		hsts: null,
 		cors: null,
@@ -200,6 +201,7 @@
 			count += allowlistList.length;
 			count += blocklistList.length;
 			count += trustedProxiesList.length;
+			if (config.cloudflare_real_ip) count++;
 			if (config.http_proxy) count++;
 			if (config.hsts) count++;
 			if (config.cors) count++;
@@ -283,6 +285,7 @@
 					if (c.ip_allowlist) { config.ip_allowlist = c.ip_allowlist; allowlistList = c.ip_allowlist.map(ip => ({value:ip})); }
 					if (c.ip_blocklist) { config.ip_blocklist = c.ip_blocklist; blocklistList = c.ip_blocklist.map(ip => ({value:ip})); }
 					if (c.trusted_proxies) { config.trusted_proxies = c.trusted_proxies; trustedProxiesList = c.trusted_proxies.map(ip => ({value:ip})); }
+					if (c.cloudflare_real_ip) config.cloudflare_real_ip = c.cloudflare_real_ip;
 					if (c.http_proxy) config.http_proxy = c.http_proxy;
 					if (c.hsts) config.hsts = c.hsts;
 					if (c.cors) { config.cors = c.cors; corsOriginsList = (c.cors.allowed_origins || []).map(o => ({value:o})); }
@@ -423,6 +426,7 @@
 		if (ips_block.length > 0) cfg.ip_blocklist = ips_block;
 		const trusted = trustedProxiesList.map(i => i.value.trim()).filter(Boolean);
 		if (trusted.length > 0) cfg.trusted_proxies = trusted;
+		if (config.cloudflare_real_ip) cfg.cloudflare_real_ip = true;
 		if (config.http_proxy) cfg.http_proxy = true;
 
 		if (config.hsts && config.hsts.enabled) cfg.hsts = config.hsts;
@@ -1086,6 +1090,19 @@ function addServerAlias() { serverAliasesList = [...serverAliasesList, { value: 
 						{#if trustedProxiesList.length === 0}
 							<p class="empty-hint">No trusted proxies set. <code>$remote_addr</code> is used as-is.</p>
 						{/if}
+					</div>
+
+					<!-- Cloudflare Real IP -->
+					<div class="sub">
+						<div class="sub-header">
+							<div>
+								<h3>Cloudflare Real IP</h3>
+								<p class="field-desc">Enable when Cloudflare proxy (orange cloud) is active. Automatically trusts all Cloudflare IP ranges and uses the <code>CF-Connecting-IP</code> header to extract the real visitor IP. Without this, metrics and logs will show Cloudflare edge IPs.</p>
+							</div>
+							<button class="toggle-btn" class:active={config.cloudflare_real_ip} onclick={() => config.cloudflare_real_ip = !config.cloudflare_real_ip} type="button">
+								{config.cloudflare_real_ip ? 'On' : 'Off'}
+							</button>
+						</div>
 					</div>
 
 					<!-- HTTP Proxy Mode -->
@@ -2184,7 +2201,7 @@ function addServerAlias() { serverAliasesList = [...serverAliasesList, { value: 
 
 
 	/* ── Toggle Button ── */
-	.toggle-btn { display: flex; align-items: center; gap: 0.5rem; background: none; border: none; cursor: pointer; padding: 0; font-family: inherit; flex-shrink: 0; }
+	.toggle-btn { display: flex; align-items: center; gap: 0.5rem; background: none; border: none; cursor: pointer; padding: 0; font-family: inherit; flex-shrink: 0; color: var(--text-secondary); }
 	.toggle-track {
 		width: 38px; height: 22px; background: var(--border-bright); border-radius: 11px;
 		position: relative; transition: background var(--transition);

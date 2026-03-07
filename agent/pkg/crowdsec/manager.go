@@ -10,11 +10,21 @@ import (
 )
 
 // Manager handles CrowdSec operations
-type Manager struct{}
+type Manager struct {
+	// dockerContainer is set when running in Docker mode.
+	// All cscli commands are executed via "docker exec <container> ...".
+	dockerContainer string
+}
 
-// NewManager creates a new CrowdSec manager
-func NewManager() *Manager {
-	return &Manager{}
+// NewManager creates a new CrowdSec manager.
+// Pass an empty container name for standalone mode.
+func NewManager(dockerContainer string) *Manager {
+	return &Manager{dockerContainer: dockerContainer}
+}
+
+// IsDocker returns true if CrowdSec is managed as a Docker container.
+func (m *Manager) IsDocker() bool {
+	return m.dockerContainer != ""
 }
 
 // StatusInfo contains combined CrowdSec status information
@@ -24,14 +34,20 @@ type StatusInfo struct {
 	Version   string `json:"version"`
 }
 
-// IsInstalled checks if CrowdSec is installed
+// IsInstalled checks if CrowdSec is installed (or container exists in Docker mode)
 func (m *Manager) IsInstalled() bool {
+	if m.IsDocker() {
+		return m.dockerContainerExists()
+	}
 	_, err := exec.LookPath("cscli")
 	return err == nil
 }
 
 // IsRunning checks if the CrowdSec service is active
 func (m *Manager) IsRunning() bool {
+	if m.IsDocker() {
+		return m.dockerContainerRunning()
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "systemctl", "is-active", "crowdsec")
@@ -49,19 +65,13 @@ func (m *Manager) Status() (*StatusInfo, error) {
 		Running:   m.IsRunning(),
 	}
 
-	if info.Installed {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		cmd := exec.CommandContext(ctx, "cscli", "version")
-		output, err := cmd.CombinedOutput()
+	if info.Running {
+		output, err := m.runCscliCmd("version")
 		if err == nil {
-			// Output is multi-line like "version: v1.7.6-...\nCodename: ...\n..."
-			// Extract just the version from the first line
 			for _, line := range strings.Split(string(output), "\n") {
 				line = strings.TrimSpace(line)
 				if strings.HasPrefix(line, "version:") {
 					ver := strings.TrimSpace(strings.TrimPrefix(line, "version:"))
-					// Strip build metadata, keep just vX.Y.Z
 					if parts := strings.SplitN(ver, "-", 2); len(parts) > 0 {
 						info.Version = parts[0]
 					}
@@ -74,11 +84,39 @@ func (m *Manager) Status() (*StatusInfo, error) {
 	return info, nil
 }
 
-// runCscli executes a cscli command with a 30-second timeout and returns the raw output
-func runCscli(args ...string) ([]byte, error) {
+// dockerContainerExists checks if the CrowdSec container exists (any state)
+func (m *Manager) dockerContainerExists() bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "docker", "inspect", m.dockerContainer)
+	return cmd.Run() == nil
+}
+
+// dockerContainerRunning checks if the CrowdSec container is running
+func (m *Manager) dockerContainerRunning() bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "docker", "inspect", "-f", "{{.State.Running}}", m.dockerContainer)
+	output, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(output)) == "true"
+}
+
+// runCscliCmd runs a cscli command, routing through docker exec in Docker mode
+func (m *Manager) runCscliCmd(args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "cscli", args...)
+
+	var cmd *exec.Cmd
+	if m.IsDocker() {
+		dockerArgs := append([]string{"exec", m.dockerContainer, "cscli"}, args...)
+		cmd = exec.CommandContext(ctx, "docker", dockerArgs...)
+	} else {
+		cmd = exec.CommandContext(ctx, "cscli", args...)
+	}
+
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
@@ -92,8 +130,8 @@ func runCscli(args ...string) ([]byte, error) {
 // runJSON executes a cscli command with -o json and unmarshals the result.
 // CrowdSec wraps list output in objects like {"collections": [...]} or returns
 // plain arrays depending on the command and version. This handles both.
-func runJSON(args []string, dest interface{}) error {
-	output, err := runCscli(args...)
+func (m *Manager) runJSON(args []string, dest interface{}) error {
+	output, err := m.runCscliCmd(args...)
 	if err != nil {
 		return err
 	}

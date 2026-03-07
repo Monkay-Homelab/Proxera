@@ -40,7 +40,7 @@ func NewDeployer(manager *nginx.Manager, configPath, enabledPath string) *Deploy
 // ensureHTPasswd creates or removes htpasswd file based on config
 func (d *Deployer) ensureHTPasswd(host types.Host) error {
 	safeDomain := nginx.SanitizeDomain(host.Domain)
-	htpasswdPath := fmt.Sprintf("/etc/nginx/.htpasswd_%s", safeDomain)
+	htpasswdPath := filepath.Join(d.configPath, fmt.Sprintf(".htpasswd_%s", safeDomain))
 
 	// Determine basic auth credentials from config or legacy field
 	var username, password string
@@ -75,7 +75,7 @@ func (d *Deployer) ensureHTPasswd(host types.Host) error {
 // removeHTPasswd removes the htpasswd file for a domain
 func (d *Deployer) removeHTPasswd(domain string) {
 	safeDomain := nginx.SanitizeDomain(domain)
-	htpasswdPath := fmt.Sprintf("/etc/nginx/.htpasswd_%s", safeDomain)
+	htpasswdPath := filepath.Join(d.configPath, fmt.Sprintf(".htpasswd_%s", safeDomain))
 	os.Remove(htpasswdPath)
 }
 
@@ -159,6 +159,11 @@ func (d *Deployer) ApplyHost(host types.Host) error {
 	// Ensure log rotation is configured
 	if err := d.EnsureLogRotation(); err != nil {
 		log.Printf("Warning: failed to ensure log rotation: %v", err)
+	}
+
+	// Ensure CrowdSec blocklist geo config exists
+	if err := d.EnsureCrowdSecBlocklist(); err != nil {
+		log.Printf("Warning: failed to ensure CrowdSec blocklist config: %v", err)
 	}
 
 	// Ensure ACME challenge directory exists for SSL hosts
@@ -284,6 +289,11 @@ func (d *Deployer) ApplyAll(hosts []types.Host) (int, error) {
 	// Ensure log rotation is configured
 	if err := d.EnsureLogRotation(); err != nil {
 		log.Printf("Warning: failed to ensure log rotation: %v", err)
+	}
+
+	// Ensure CrowdSec blocklist geo config exists
+	if err := d.EnsureCrowdSecBlocklist(); err != nil {
+		log.Printf("Warning: failed to ensure CrowdSec blocklist config: %v", err)
 	}
 
 	// Track which proxera configs should exist

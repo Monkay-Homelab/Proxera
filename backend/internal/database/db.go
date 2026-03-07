@@ -355,6 +355,20 @@ func Initialize() error {
 		);
 		CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_token ON password_reset_tokens(token);
 		CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_user_id ON password_reset_tokens(user_id);
+
+		-- User API keys
+		CREATE TABLE IF NOT EXISTS user_api_keys (
+			id BIGSERIAL PRIMARY KEY,
+			user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			name VARCHAR(255) NOT NULL,
+			key_hash VARCHAR(64) NOT NULL UNIQUE,
+			key_prefix VARCHAR(12) NOT NULL,
+			last_used_at TIMESTAMPTZ,
+			expires_at TIMESTAMPTZ,
+			created_at TIMESTAMPTZ DEFAULT NOW()
+		);
+		CREATE INDEX IF NOT EXISTS idx_user_api_keys_hash ON user_api_keys(key_hash);
+		CREATE INDEX IF NOT EXISTS idx_user_api_keys_user_id ON user_api_keys(user_id);
 	`
 
 	_, err := DB.Exec(context.Background(), query)

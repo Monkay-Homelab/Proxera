@@ -33,12 +33,9 @@ type whitelistFile struct {
 func (m *Manager) ListWhitelists() ([]WhitelistEntry, error) {
 	entries := []WhitelistEntry{}
 
-	data, err := os.ReadFile(whitelistPath)
+	data, err := m.readWhitelistFile()
 	if err != nil {
-		if os.IsNotExist(err) {
-			return entries, nil
-		}
-		return nil, fmt.Errorf("failed to read whitelist file: %w", err)
+		return entries, nil
 	}
 
 	var wl whitelistFile
@@ -54,6 +51,13 @@ func (m *Manager) ListWhitelists() ([]WhitelistEntry, error) {
 	}
 
 	return entries, nil
+}
+
+func (m *Manager) readWhitelistFile() ([]byte, error) {
+	if m.IsDocker() {
+		return exec.Command("docker", "exec", m.dockerContainer, "cat", whitelistPath).Output()
+	}
+	return os.ReadFile(whitelistPath)
 }
 
 // AddWhitelist adds an IP to the whitelist
@@ -99,7 +103,11 @@ func (m *Manager) RemoveWhitelist(ip string) error {
 	// If no IPs left, remove the whitelist file entirely
 	// (CrowdSec rejects empty IP lists and fails to start)
 	if len(newIPs) == 0 {
-		os.Remove(whitelistPath)
+		if m.IsDocker() {
+			exec.Command("docker", "exec", m.dockerContainer, "rm", "-f", whitelistPath).Run()
+		} else {
+			os.Remove(whitelistPath)
+		}
 		log.Println("[crowdsec] Whitelist empty, removed whitelist file")
 		return m.reloadCrowdSec()
 	}
@@ -118,7 +126,7 @@ func (m *Manager) loadOrCreateWhitelist() *whitelistFile {
 	}
 	wl.Whitelist.Reason = "Whitelisted by Proxera panel"
 
-	data, err := os.ReadFile(whitelistPath)
+	data, err := m.readWhitelistFile()
 	if err != nil {
 		return wl
 	}
@@ -136,6 +144,17 @@ func (m *Manager) saveWhitelist(wl *whitelistFile) error {
 		return fmt.Errorf("failed to marshal whitelist: %w", err)
 	}
 
+	if m.IsDocker() {
+		// Write via docker exec: pipe YAML into the container
+		cmd := exec.Command("docker", "exec", "-i", m.dockerContainer, "sh", "-c",
+			fmt.Sprintf("mkdir -p %s && cat > %s", filepath.Dir(whitelistPath), whitelistPath))
+		cmd.Stdin = strings.NewReader(string(data))
+		if output, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("failed to write whitelist in container: %s", string(output))
+		}
+		return nil
+	}
+
 	if err := os.MkdirAll(filepath.Dir(whitelistPath), 0755); err != nil {
 		return fmt.Errorf("failed to create whitelist directory: %w", err)
 	}
@@ -149,6 +168,14 @@ func (m *Manager) saveWhitelist(wl *whitelistFile) error {
 
 func (m *Manager) reloadCrowdSec() error {
 	log.Println("[crowdsec] Reloading CrowdSec...")
+	if m.IsDocker() {
+		cmd := exec.Command("docker", "restart", m.dockerContainer)
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("failed to restart crowdsec container: %s", strings.TrimSpace(string(output)))
+		}
+		return nil
+	}
 	cmd := exec.Command("systemctl", "reload", "crowdsec")
 	output, err := cmd.CombinedOutput()
 	if err != nil {

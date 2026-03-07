@@ -3,7 +3,6 @@ package crowdsec
 import (
 	"encoding/json"
 	"fmt"
-	"os/exec"
 	"strconv"
 )
 
@@ -27,8 +26,7 @@ type alertWithDecisions struct {
 
 // ListDecisions returns active local decisions (from local detection)
 func (m *Manager) ListDecisions() ([]Decision, error) {
-	cmd := exec.Command("cscli", "decisions", "list", "-o", "json")
-	output, err := cmd.CombinedOutput()
+	output, err := m.runCscliCmd("decisions", "list", "-o", "json")
 	if err != nil {
 		// cscli returns error when no decisions exist
 		return []Decision{}, nil
@@ -53,21 +51,18 @@ func (m *Manager) ListDecisions() ([]Decision, error) {
 
 // AddDecision manually adds a ban decision
 func (m *Manager) AddDecision(ip, duration, reason string) error {
-	args := []string{"decisions", "add", "--ip", ip, "--duration", duration, "--reason", reason}
-	cmd := exec.Command("cscli", args...)
-	output, err := cmd.CombinedOutput()
+	_, err := m.runCscliCmd("decisions", "add", "--ip", ip, "--duration", duration, "--reason", reason)
 	if err != nil {
-		return fmt.Errorf("failed to add decision: %s", string(output))
+		return fmt.Errorf("failed to add decision: %v", err)
 	}
 	return nil
 }
 
 // DeleteDecision removes a decision by ID
 func (m *Manager) DeleteDecision(id int) error {
-	cmd := exec.Command("cscli", "decisions", "delete", "--id", strconv.Itoa(id))
-	output, err := cmd.CombinedOutput()
+	_, err := m.runCscliCmd("decisions", "delete", "--id", strconv.Itoa(id))
 	if err != nil {
-		return fmt.Errorf("failed to delete decision: %s", string(output))
+		return fmt.Errorf("failed to delete decision: %v", err)
 	}
 	return nil
 }

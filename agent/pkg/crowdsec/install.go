@@ -28,8 +28,12 @@ func isNginxOrgPackage() bool {
 	return strings.Contains(string(output), "nginx.org")
 }
 
-// Install installs CrowdSec, the firewall bouncer, and default collections
+// Install installs CrowdSec, the firewall bouncer, and default collections.
+// In Docker mode, this starts the CrowdSec container.
 func (m *Manager) Install(enrollmentKey string) error {
+	if m.IsDocker() {
+		return m.dockerInstall(enrollmentKey)
+	}
 	if m.IsInstalled() {
 		return fmt.Errorf("CrowdSec is already installed")
 	}
@@ -252,6 +256,53 @@ func (m *Manager) installNginxBouncer() error {
 	return fmt.Errorf("unsupported package manager")
 }
 
+// dockerInstall starts the CrowdSec container and optionally enrolls
+func (m *Manager) dockerInstall(enrollmentKey string) error {
+	if m.IsRunning() {
+		return fmt.Errorf("CrowdSec container is already running")
+	}
+
+	log.Println("[crowdsec] Starting CrowdSec container...")
+	cmd := exec.Command("docker", "start", m.dockerContainer)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to start CrowdSec container: %s", strings.TrimSpace(string(output)))
+	}
+
+	// Wait for container to be ready
+	for i := 0; i < 10; i++ {
+		time.Sleep(2 * time.Second)
+		if m.dockerContainerRunning() {
+			break
+		}
+	}
+
+	if enrollmentKey != "" {
+		log.Println("[crowdsec] Enrolling in CrowdSec Central API...")
+		if _, err := m.runCscliCmd("console", "enroll", enrollmentKey); err != nil {
+			log.Printf("[crowdsec] Warning: enrollment failed: %v", err)
+		}
+	}
+
+	log.Println("[crowdsec] CrowdSec container started successfully")
+	return nil
+}
+
+// dockerUninstall stops the CrowdSec container
+func (m *Manager) dockerUninstall() error {
+	if !m.IsRunning() {
+		return fmt.Errorf("CrowdSec container is not running")
+	}
+
+	log.Println("[crowdsec] Stopping CrowdSec container...")
+	cmd := exec.Command("docker", "stop", m.dockerContainer)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to stop CrowdSec container: %s", strings.TrimSpace(string(output)))
+	}
+
+	log.Println("[crowdsec] CrowdSec container stopped")
+	return nil
+}
+
 func (m *Manager) runCommands(cmds [][]string) error {
 	for _, args := range cmds {
 		log.Printf("[crowdsec] Running: %v", args)
@@ -269,8 +320,12 @@ func (m *Manager) runCommands(cmds [][]string) error {
 	return nil
 }
 
-// Uninstall removes CrowdSec and the nginx bouncer
+// Uninstall removes CrowdSec and the nginx bouncer.
+// In Docker mode, this stops the CrowdSec container.
 func (m *Manager) Uninstall() error {
+	if m.IsDocker() {
+		return m.dockerUninstall()
+	}
 	if !m.IsInstalled() {
 		return fmt.Errorf("CrowdSec is not installed")
 	}

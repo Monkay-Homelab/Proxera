@@ -2,9 +2,12 @@ package middleware
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/golang-jwt/jwt/v5"
@@ -40,6 +43,30 @@ func Auth(c *fiber.Ctx) error {
 	}
 
 	tokenString := parts[1]
+
+	// Check if this is a user API key (pxk_ prefix)
+	if strings.HasPrefix(tokenString, "pxk_") {
+		userID, err := authenticateAPIKey(tokenString)
+		if err != nil {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": err.Error()})
+		}
+		c.Locals("user_id", userID)
+		var role string
+		var suspended bool
+		err = database.DB.QueryRow(context.Background(),
+			"SELECT COALESCE(role, 'member'), COALESCE(suspended, false) FROM users WHERE id = $1", userID,
+		).Scan(&role, &suspended)
+		if err != nil {
+			role = "member"
+		}
+		if suspended {
+			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+				"error": "Account suspended. Contact your administrator for assistance.",
+			})
+		}
+		c.Locals("user_role", role)
+		return c.Next()
+	}
 
 	// Parse and validate token with issuer and audience checks
 	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
@@ -100,4 +127,31 @@ func Auth(c *fiber.Ctx) error {
 	c.Locals("user_role", role)
 
 	return c.Next()
+}
+
+// authenticateAPIKey validates a user API key and returns the user ID.
+func authenticateAPIKey(key string) (int, error) {
+	hash := sha256.Sum256([]byte(key))
+	keyHash := hex.EncodeToString(hash[:])
+
+	var userID int
+	var expiresAt *time.Time
+	err := database.DB.QueryRow(context.Background(),
+		`SELECT user_id, expires_at FROM user_api_keys WHERE key_hash = $1`, keyHash,
+	).Scan(&userID, &expiresAt)
+	if err != nil {
+		return 0, fiber.NewError(fiber.StatusUnauthorized, "Invalid API key")
+	}
+
+	if expiresAt != nil && time.Now().After(*expiresAt) {
+		return 0, fiber.NewError(fiber.StatusUnauthorized, "API key expired")
+	}
+
+	// Update last_used_at in background
+	go func() {
+		database.DB.Exec(context.Background(),
+			`UPDATE user_api_keys SET last_used_at = NOW() WHERE key_hash = $1`, keyHash)
+	}()
+
+	return userID, nil
 }

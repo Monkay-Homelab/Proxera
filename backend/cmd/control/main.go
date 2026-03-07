@@ -111,6 +111,7 @@ func main() {
 		}
 
 		localMgr = localagent.New(cfg)
+		localMgr.SetDDNSUpdate(handlers.UpdateDDNSForAgent)
 
 		// Register local agent (deferred until first admin user exists)
 		if _, err := localMgr.RegisterLocalAgent(); err != nil {

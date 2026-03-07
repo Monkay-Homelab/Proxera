@@ -169,7 +169,7 @@ func main() {
 		ws.SetCollector(collector)
 
 		// Initialize CrowdSec manager
-		csManager := crowdsec.NewManager()
+		csManager := crowdsec.NewManager("")
 		ws.SetCrowdSec(csManager)
 
 		// Set metrics interval from config (default 300s / 5min)

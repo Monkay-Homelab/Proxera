@@ -716,6 +716,7 @@
 		display: flex; align-items: center; gap: 0.5rem;
 		background: none; border: none; cursor: pointer;
 		padding: 0.5rem 0; font-family: inherit;
+		color: var(--text-secondary);
 	}
 	.toggle-track {
 		width: 36px; height: 20px; background: var(--border);

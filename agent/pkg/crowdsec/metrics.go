@@ -2,16 +2,14 @@ package crowdsec
 
 import (
 	"fmt"
-	"os/exec"
 	"strings"
 )
 
 // GetMetrics returns CrowdSec metrics as raw JSON string
 func (m *Manager) GetMetrics() (string, error) {
-	cmd := exec.Command("cscli", "metrics", "-o", "json")
-	output, err := cmd.CombinedOutput()
+	output, err := m.runCscliCmd("metrics", "-o", "json")
 	if err != nil {
-		return "", fmt.Errorf("failed to get metrics: %s", string(output))
+		return "", fmt.Errorf("failed to get metrics: %v", err)
 	}
 	return strings.TrimSpace(string(output)), nil
 }

@@ -2,7 +2,6 @@ package crowdsec
 
 import (
 	"fmt"
-	"os/exec"
 	"regexp"
 )
 
@@ -20,7 +19,7 @@ type Collection struct {
 // ListCollections returns all installed collections
 func (m *Manager) ListCollections() ([]Collection, error) {
 	var collections []Collection
-	if err := runJSON([]string{"collections", "list", "-o", "json"}, &collections); err != nil {
+	if err := m.runJSON([]string{"collections", "list", "-o", "json"}, &collections); err != nil {
 		return nil, err
 	}
 	if collections == nil {
@@ -34,10 +33,9 @@ func (m *Manager) InstallCollection(name string) error {
 	if !validCollectionName.MatchString(name) {
 		return fmt.Errorf("invalid collection name: %s (expected format: author/name)", name)
 	}
-	cmd := exec.Command("cscli", "collections", "install", name)
-	output, err := cmd.CombinedOutput()
+	_, err := m.runCscliCmd("collections", "install", name)
 	if err != nil {
-		return fmt.Errorf("failed to install collection %s: %s", name, string(output))
+		return fmt.Errorf("failed to install collection %s: %v", name, err)
 	}
 	return nil
 }
@@ -47,10 +45,9 @@ func (m *Manager) RemoveCollection(name string) error {
 	if !validCollectionName.MatchString(name) {
 		return fmt.Errorf("invalid collection name: %s (expected format: author/name)", name)
 	}
-	cmd := exec.Command("cscli", "collections", "remove", name)
-	output, err := cmd.CombinedOutput()
+	_, err := m.runCscliCmd("collections", "remove", name)
 	if err != nil {
-		return fmt.Errorf("failed to remove collection %s: %s", name, string(output))
+		return fmt.Errorf("failed to remove collection %s: %v", name, err)
 	}
 	return nil
 }

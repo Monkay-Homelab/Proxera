@@ -35,7 +35,7 @@ type Bouncer struct {
 // ListBouncers returns all registered bouncers
 func (m *Manager) ListBouncers() ([]Bouncer, error) {
 	var bouncers []Bouncer
-	if err := runJSON([]string{"bouncers", "list", "-o", "json"}, &bouncers); err != nil {
+	if err := m.runJSON([]string{"bouncers", "list", "-o", "json"}, &bouncers); err != nil {
 		return nil, err
 	}
 	if bouncers == nil {
@@ -50,6 +50,10 @@ func (m *Manager) ListBouncers() ([]Bouncer, error) {
 
 // InstallBouncer installs a bouncer package via system package manager
 func (m *Manager) InstallBouncer(packageName string) error {
+	if m.IsDocker() {
+		return fmt.Errorf("bouncer management is not supported in Docker mode — configure bouncers in the CrowdSec container directly")
+	}
+
 	if !allowedBouncerPackages[packageName] {
 		if !validBouncerPackageRe.MatchString(packageName) {
 			return fmt.Errorf("invalid bouncer package name: %s", packageName)
@@ -106,6 +110,10 @@ func (m *Manager) InstallBouncer(packageName string) error {
 
 // RemoveBouncer removes a bouncer package via system package manager
 func (m *Manager) RemoveBouncer(packageName string) error {
+	if m.IsDocker() {
+		return fmt.Errorf("bouncer management is not supported in Docker mode — configure bouncers in the CrowdSec container directly")
+	}
+
 	if !validBouncerPackageRe.MatchString(packageName) {
 		return fmt.Errorf("invalid bouncer package name: %s", packageName)
 	}

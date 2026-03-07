@@ -60,6 +60,15 @@ func ListHostBackups(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 
+	// Local agent: dispatch directly
+	if IsLocalAgent(agentStringID) {
+		result, err := localAgent.ListBackups(domain)
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		}
+		return c.JSON(fiber.Map{"backups": result})
+	}
+
 	command := models.AgentCommand{
 		Type:    "list_backups",
 		Payload: map[string]interface{}{"domain": domain},
@@ -104,6 +113,15 @@ func GetHostBackupContent(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 
+	// Local agent: dispatch directly
+	if IsLocalAgent(agentStringID) {
+		content, err := localAgent.GetBackupContent(domain, filename)
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		}
+		return c.JSON(fiber.Map{"content": content})
+	}
+
 	command := models.AgentCommand{
 		Type: "get_backup",
 		Payload: map[string]interface{}{
@@ -143,6 +161,14 @@ func RestoreHostBackup(c *fiber.Ctx) error {
 			return c.Status(fe.Code).JSON(fiber.Map{"error": fe.Message})
 		}
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	// Local agent: dispatch directly
+	if IsLocalAgent(agentStringID) {
+		if err := localAgent.RestoreBackup(domain, req.Filename); err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		}
+		return c.JSON(fiber.Map{"message": "Backup restored successfully"})
 	}
 
 	command := models.AgentCommand{
