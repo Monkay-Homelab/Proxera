@@ -1,0 +1,1 @@
+function n(){let r=null;return{signal(){return r&&r.abort(),r=new AbortController,r.signal},abort(){r&&(r.abort(),r=null)},isAborted(t){return t instanceof DOMException&&t.name==="AbortError"}}}export{n as c};

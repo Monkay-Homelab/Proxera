@@ -1,0 +1,80 @@
+services:
+  proxera:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VERSION: ${VERSION:-dev}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      DB_HOST: postgres
+      PROXERA_DOCKER: "true"
+      NGINX_RELOAD_CMD: "docker kill -s HUP project-nginx-1"
+      NGINX_TEST_CMD: "docker exec project-nginx-1 nginx -t"
+    ports:
+      - "${API_PORT:-8080}:8080"
+    volumes:
+      - nginx-conf:/etc/nginx/conf.d
+      - nginx-ssl:/etc/nginx/ssl
+      - nginx-logs:/var/log/nginx
+      - proxera-data:/var/lib/proxera
+      - agent-downloads:/app/downloads
+      - /var/run/docker.sock:/var/run/docker.sock
+    group_add:
+      - "${DOCKER_GID:-999}"
+
+  postgres:
+    image: timescale/timescaledb:2.17.2-pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME:-proxera}
+      POSTGRES_USER: ${DB_USER:-proxera}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-proxera_dev_password}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-proxera}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  nginx:
+    image: nginx:1.27
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - nginx-conf:/etc/nginx/conf.d
+      - nginx-ssl:/etc/nginx/ssl
+      - nginx-logs:/var/log/nginx
+    depends_on:
+      - proxera
+
+  crowdsec:
+    image: crowdsecurity/crowdsec:v1.6.4
+    restart: unless-stopped
+    environment:
+      COLLECTIONS: "crowdsecurity/nginx"
+    volumes:
+      - nginx-logs:/var/log/nginx:ro
+      - crowdsec-config:/etc/crowdsec
+      - crowdsec-data:/var/lib/crowdsec/data
+    depends_on:
+      - nginx
+    profiles:
+      - crowdsec
+
+volumes:
+  pgdata:
+  nginx-conf:
+  nginx-ssl:
+  nginx-logs:
+  proxera-data:
+  agent-downloads:
+  crowdsec-config:
+  crowdsec-data:

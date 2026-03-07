@@ -1,0 +1,1 @@
+export const env={"PUBLIC_API_URL":"http://192.168.3.252:8080","PUBLIC_WS_URL":"ws://192.168.3.252:8080/ws","PUBLIC_SITE_NAME":"Proxera","PUBLIC_SITE_URL":"http://192.168.3.252:5173"}

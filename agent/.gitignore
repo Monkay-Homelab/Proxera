@@ -1,0 +1,17 @@
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Compiled binaries
+bin/
+/proxera
+/proxera-linux-*
+/proxera-darwin-*
+/proxera-windows-*
+
+# Local config (contains host-specific paths and domains)
+proxera.yaml
+
+# Logs
+*.log
