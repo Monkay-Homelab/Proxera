@@ -50,11 +50,19 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
     -ldflags "-X github.com/proxera/agent/pkg/version.Version=${VERSION}" \
     -o /proxera-linux-arm64 ./cmd/proxera/main.go
 
-# --- Stage 4: Final image ---
+# --- Stage 4: Download Docker CLI (static binary, avoids old Go stdlib in Alpine package) ---
+FROM alpine:3.21 AS docker-cli
+RUN apk add --no-cache curl && \
+    curl -fsSL https://download.docker.com/linux/static/stable/x86_64/docker-29.3.0.tgz | \
+    tar xz --strip-components=1 -C /usr/local/bin docker/docker
+
+# --- Stage 5: Final image ---
 FROM alpine:3.21
 
-RUN apk add --no-cache ca-certificates curl docker-cli && \
+RUN apk add --no-cache ca-certificates curl && \
     mkdir -p /etc/nginx/ssl /etc/nginx/conf.d /var/log/nginx /var/lib/proxera
+
+COPY --from=docker-cli /usr/local/bin/docker /usr/bin/docker
 
 WORKDIR /app
 COPY --from=go-builder /proxera-control .
