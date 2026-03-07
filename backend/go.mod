@@ -1,13 +1,13 @@
 module github.com/proxera/backend
 
-go 1.24.0
+go 1.26.0
 
-toolchain go1.24.13
+toolchain go1.26.1
 
 require (
 	github.com/go-acme/lego/v4 v4.31.0
 	github.com/gofiber/contrib/websocket v1.3.4
-	github.com/gofiber/fiber/v2 v2.52.11
+	github.com/gofiber/fiber/v2 v2.52.12
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/jackc/pgx/v5 v5.8.0
 	github.com/joho/godotenv v1.5.1
