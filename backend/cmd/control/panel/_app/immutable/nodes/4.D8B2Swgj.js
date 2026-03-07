@@ -1,0 +1,1 @@
+import{r as e}from"../chunks/cZESV6nM.js";function o(){throw e(302,"/admin/dashboard")}const t=Object.freeze(Object.defineProperty({__proto__:null,load:o},Symbol.toStringTag,{value:"Module"}));export{t as universal};

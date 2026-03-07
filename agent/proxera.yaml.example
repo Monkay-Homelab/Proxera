@@ -1,0 +1,10 @@
+agent_port: 52080
+nginx_binary: /usr/sbin/nginx
+nginx_config_path: /etc/nginx/sites-available
+nginx_enabled_path: /etc/nginx/sites-enabled
+
+hosts:
+  - domain: example.local
+    upstream_url: http://localhost:3000
+    ssl: false
+    websocket: false

@@ -1,0 +1,1 @@
+import{w as a}from"./DcOI-RfT.js";const i={open:!1,title:"",message:"",confirmLabel:"Confirm",danger:!1,resolve:null},t=a(i);function o(r,e={}){return new Promise(n=>{t.set({open:!0,title:e.title||"Confirm",message:r,confirmLabel:e.confirmLabel||"Confirm",danger:e.danger??!1,resolve:n})})}export{t as a,o as c};

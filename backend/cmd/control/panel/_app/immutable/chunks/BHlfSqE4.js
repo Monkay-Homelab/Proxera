@@ -1,0 +1,1 @@
+import{s as o,b as p,E as a,i as c,d as _}from"./B9pbSv0J.js";import{p as u}from"./C6x6IEVh.js";import{B as f}from"./Do9-_sPp.js";function d(r,e,...t){var i=new f(r);p(()=>{const n=e()??null;n==null&&c(),i.ensure(n,n&&(s=>n(s,...t)))},a)}function E(r,e){const t=(i,...n)=>{var s=_;o(r);try{return e(i,...n)}finally{o(s)}};return u(t),t}export{d as s,E as w};

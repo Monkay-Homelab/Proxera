@@ -1,0 +1,1 @@
+import{w as n}from"./DcOI-RfT.js";let u=0;const e=n([]);function a(t,r,c=5e3){const o=u++;e.update(s=>[...s,{id:o,message:t,type:r}]),setTimeout(()=>{e.update(s=>s.filter(i=>i.id!==o))},c)}function f(t){a(t,"success")}function p(t){a(t,"error",7e3)}export{f as a,e as b,p as t};
