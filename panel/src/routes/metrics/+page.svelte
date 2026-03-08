@@ -33,9 +33,9 @@
 
 	async function loadWorldMap() {
 		try {
-			const resp = await fetch('https://cdn.jsdelivr.net/npm/world-atlas@2/land-110m.json');
+			const resp = await fetch('https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json');
 			const topo = await resp.json();
-			worldGeo = feature(topo, topo.objects.land);
+			worldGeo = feature(topo, topo.objects.countries);
 		} catch (e) { console.warn('Failed to load world map:', e); }
 	}
 
@@ -89,7 +89,7 @@
 			const resp = await api(url, { signal: metricsGroup.signal() });
 			if (!resp.ok) { const data = await resp.json(); throw new Error(data.error || 'Failed to fetch'); }
 			metricsData = await resp.json();
-			availableDomains = metricsData.domains || [];
+			if (!selectedDomain) availableDomains = metricsData.domains || [];
 			availableAgents = metricsData.agents || [];
 			renderKey++;
 			tooltip = { visible: false, x: 0, y: 0, html: '' };
@@ -126,6 +126,33 @@
 		}
 		finally { blockedLoading = false; }
 	}
+
+	function groupDomains(domains) {
+		if (!domains || domains.length === 0) return [];
+		const getRoot = (d) => { const p = d.split('.'); return p.length > 2 ? p.slice(-2).join('.') : d; };
+		const groups = {};
+		for (const d of [...domains].sort()) {
+			const root = getRoot(d);
+			if (!groups[root]) groups[root] = [];
+			groups[root].push(d);
+		}
+		// Sort groups by root domain, put each group's domains together
+		const result = [];
+		const roots = Object.keys(groups).sort();
+		for (const root of roots) {
+			const items = groups[root];
+			// Sort: root domain first, then subdomains alphabetically
+			items.sort((a, b) => {
+				if (a === root) return -1;
+				if (b === root) return 1;
+				return a.localeCompare(b);
+			});
+			result.push({ root, domains: items });
+		}
+		return result;
+	}
+
+	$: domainGroups = groupDomains(availableDomains);
 
 	function changeRange(range) { selectedRange = range; fetchMetrics(); fetchVisitors(); fetchBlocked(); }
 	function changeAgent(e) { selectedAgent = e.target.value; selectedDomain = ''; fetchMetrics(); fetchVisitors(); fetchBlocked(); }
@@ -167,7 +194,12 @@
 
 <div class="page">
 	<header class="page-head">
-		<h1>Metrics</h1>
+		<div class="head-left">
+			<h1>Metrics</h1>
+			{#if autoRefresh}
+				<span class="live-dot"></span>
+			{/if}
+		</div>
 		<div class="head-actions">
 			<button class="btn-ghost" class:on={autoRefresh} on:click={toggleAutoRefresh}>
 				<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
@@ -177,7 +209,7 @@
 				<button class="btn-ghost" disabled={exporting} on:click={() => exportMenuOpen = !exportMenuOpen}>
 					{#if exporting}
 						<svg class="spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
-						Exporting…
+						Exporting...
 					{:else}
 						<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
 						Export
@@ -189,11 +221,11 @@
 					<div class="export-menu" on:click|stopPropagation>
 						<button on:click={() => exportMetrics('csv')}>
 							<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-							Download CSV
+							CSV
 						</button>
 						<button on:click={() => exportMetrics('json')}>
 							<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-							Download JSON
+							JSON
 						</button>
 					</div>
 				{/if}
@@ -208,9 +240,19 @@
 				<option value="">All Agents</option>
 				{#each availableAgents as agent}<option value={agent.agent_id}>{agent.name}</option>{/each}
 			</select>
-			<select class="sel" on:change={changeDomain} value={selectedDomain}>
+			<select class="sel domain-sel" on:change={changeDomain} value={selectedDomain}>
 				<option value="">All Domains</option>
-				{#each availableDomains as domain}<option value={domain}>{domain}</option>{/each}
+				{#each domainGroups as group}
+					{#if group.domains.length === 1}
+						<option value={group.domains[0]}>{group.domains[0]}</option>
+					{:else}
+						<optgroup label={group.root}>
+							{#each group.domains as domain}
+								<option value={domain}>{domain}</option>
+							{/each}
+						</optgroup>
+					{/if}
+				{/each}
 			</select>
 		</div>
 		<div class="range-bar">
@@ -236,20 +278,57 @@
 		{@const totalReqs = agg.reduce((s,b) => s+(b.request_count||0), 0)}
 		{@const avgUp = totalReqs > 0 ? totalUpW/totalReqs : 0}
 
-		<div class="kpi-row">
-			<div class="kpi"><span class="kpi-num">{formatNumber(metricsData.summary.total_requests)}</span><span class="kpi-label">Requests</span></div>
-			<div class="kpi"><span class="kpi-num">{formatBytes(metricsData.summary.total_bytes_sent)}</span><span class="kpi-label">Out</span></div>
-			<div class="kpi"><span class="kpi-num">{formatBytes(metricsData.summary.total_bytes_received)}</span><span class="kpi-label">In</span></div>
-			<div class="kpi"><span class="kpi-num" class:kpi-bad={metricsData.summary.error_rate > 5}>{metricsData.summary.error_rate.toFixed(1)}%</span><span class="kpi-label">Errors</span></div>
-			<div class="kpi"><span class="kpi-num">{formatMs(metricsData.summary.avg_latency_ms)}</span><span class="kpi-label">Latency</span></div>
-			<div class="kpi"><span class="kpi-num">{formatMs(avgUp)}</span><span class="kpi-label">Upstream</span></div>
-			<div class="kpi"><span class="kpi-num">{formatNumber(totalUniqueIPs)}</span><span class="kpi-label">IPs</span></div>
-			<div class="kpi"><span class="kpi-num">{cacheHitRate.toFixed(1)}%</span><span class="kpi-label">Cache</span></div>
+		<div class="kpi-strip">
+			<div class="kpi">
+				<span class="kpi-label">Requests</span>
+				<span class="kpi-num">{formatNumber(metricsData.summary.total_requests)}</span>
+			</div>
+			<div class="kpi-sep"></div>
+			<div class="kpi">
+				<span class="kpi-label">Bandwidth Out</span>
+				<span class="kpi-num">{formatBytes(metricsData.summary.total_bytes_sent)}</span>
+			</div>
+			<div class="kpi-sep"></div>
+			<div class="kpi">
+				<span class="kpi-label">Bandwidth In</span>
+				<span class="kpi-num">{formatBytes(metricsData.summary.total_bytes_received)}</span>
+			</div>
+			<div class="kpi-sep"></div>
+			<div class="kpi">
+				<span class="kpi-label">Error Rate</span>
+				<span class="kpi-num" class:kpi-bad={metricsData.summary.error_rate > 5}>{metricsData.summary.error_rate.toFixed(1)}%</span>
+			</div>
+			<div class="kpi-sep"></div>
+			<div class="kpi">
+				<span class="kpi-label">Latency</span>
+				<span class="kpi-num">{formatMs(metricsData.summary.avg_latency_ms)}</span>
+			</div>
+			<div class="kpi-sep"></div>
+			<div class="kpi">
+				<span class="kpi-label">Upstream</span>
+				<span class="kpi-num">{formatMs(avgUp)}</span>
+			</div>
+			<div class="kpi-sep"></div>
+			<div class="kpi">
+				<span class="kpi-label">Unique IPs</span>
+				<span class="kpi-num">{formatNumber(totalUniqueIPs)}</span>
+			</div>
+			<div class="kpi-sep"></div>
+			<div class="kpi">
+				<span class="kpi-label">Cache Hit</span>
+				<span class="kpi-num">{cacheHitRate.toFixed(1)}%</span>
+			</div>
 		</div>
 
 		{#if metricsData.buckets && metricsData.buckets.length > 0}
-			<div class="grid-charts">
-				<div class="chart-box"><div class="chart-title">Requests Over Time</div><div class="chart-wrap"><ChartCanvas id="requestsChart" data={agg} keys={['request_count']} colors={[C.blue]} {selectedRange} onTooltip={setTooltip} /></div></div>
+			<!-- Primary chart: full-width requests overview -->
+			<div class="chart-box chart-hero">
+				<div class="chart-title">Requests Over Time</div>
+				<div class="chart-wrap chart-wrap-lg"><ChartCanvas id="requestsChart" data={agg} keys={['request_count']} colors={[C.blue]} {selectedRange} onTooltip={setTooltip} /></div>
+			</div>
+
+			<!-- 2-up row: status codes + latency -->
+			<div class="chart-pair">
 				<div class="chart-box">
 					<div class="chart-head"><div class="chart-title">Status Codes</div><div class="chart-legend"><span><i style="background:{C.green}"></i>2xx</span><span><i style="background:{C.blue}"></i>3xx</span><span><i style="background:{C.orange}"></i>4xx</span><span><i style="background:{C.red}"></i>5xx</span></div></div>
 					<div class="chart-wrap"><ChartCanvas id="statusChart" data={agg} keys={['status_2xx','status_3xx','status_4xx','status_5xx']} colors={[C.green,C.blue,C.orange,C.red]} type="stacked" {selectedRange} onTooltip={setTooltip} /></div>
@@ -258,19 +337,36 @@
 					<div class="chart-head"><div class="chart-title">Latency Percentiles</div><div class="chart-legend"><span><i style="background:{C.green}"></i>p50</span><span><i style="background:{C.orange}"></i>p95</span><span><i style="background:{C.red}"></i>p99</span></div></div>
 					<div class="chart-wrap"><ChartCanvas id="latencyChart" data={agg} keys={['latency_p50_ms','latency_p95_ms','latency_p99_ms']} colors={[C.green,C.orange,C.red]} formatter="ms" {selectedRange} onTooltip={setTooltip} /></div>
 				</div>
+			</div>
+
+			<!-- 3-up grid: bandwidth, visitors, connections -->
+			<div class="chart-trio">
 				<div class="chart-box">
 					<div class="chart-head"><div class="chart-title">Bandwidth</div><div class="chart-legend"><span><i style="background:{C.blue}"></i>Out</span><span><i style="background:{C.purple}"></i>In</span></div></div>
 					<div class="chart-wrap"><ChartCanvas id="bandwidthChart" data={agg} keys={['bytes_sent','bytes_received']} colors={[C.blue,C.purple]} formatter="bytes" {selectedRange} onTooltip={setTooltip} /></div>
 				</div>
-				<div class="chart-box"><div class="chart-title">Unique Visitors</div><div class="chart-wrap"><ChartCanvas id="visitorsChart" data={agg} keys={['unique_ips']} colors={[C.cyan]} {selectedRange} onTooltip={setTooltip} /></div></div>
-				<div class="chart-box"><div class="chart-title">Connections</div><div class="chart-wrap"><ChartCanvas id="connectionsChart" data={agg} keys={['connection_count']} colors={[C.orange]} {selectedRange} onTooltip={setTooltip} /></div></div>
-				<div class="chart-box"><div class="chart-title">Upstream Latency</div><div class="chart-wrap"><ChartCanvas id="upstreamChart" data={agg} keys={['avg_upstream_ms']} colors={[C.pink]} formatter="ms" {selectedRange} onTooltip={setTooltip} /></div></div>
+				<div class="chart-box">
+					<div class="chart-title">Unique Visitors</div>
+					<div class="chart-wrap"><ChartCanvas id="visitorsChart" data={agg} keys={['unique_ips']} colors={[C.cyan]} {selectedRange} onTooltip={setTooltip} /></div>
+				</div>
+				<div class="chart-box">
+					<div class="chart-title">Connections</div>
+					<div class="chart-wrap"><ChartCanvas id="connectionsChart" data={agg} keys={['connection_count']} colors={[C.orange]} {selectedRange} onTooltip={setTooltip} /></div>
+				</div>
+			</div>
+
+			<!-- 3-up grid: upstream, cache, request size -->
+			<div class="chart-trio">
+				<div class="chart-box">
+					<div class="chart-title">Upstream Latency</div>
+					<div class="chart-wrap"><ChartCanvas id="upstreamChart" data={agg} keys={['avg_upstream_ms']} colors={[C.pink]} formatter="ms" {selectedRange} onTooltip={setTooltip} /></div>
+				</div>
 				<div class="chart-box">
 					<div class="chart-head"><div class="chart-title">Cache</div><div class="chart-legend"><span><i style="background:{C.green}"></i>Hits</span><span><i style="background:{C.red}"></i>Misses</span></div></div>
 					<div class="chart-wrap"><ChartCanvas id="cacheChart" data={agg} keys={['cache_hits','cache_misses']} colors={[C.green,C.red]} type="stacked" {selectedRange} onTooltip={setTooltip} /></div>
 				</div>
 				<div class="chart-box">
-					<div class="chart-head"><div class="chart-title">Avg Request / Response Size</div><div class="chart-legend"><span><i style="background:{C.purple}"></i>Req</span><span><i style="background:{C.orange}"></i>Res</span></div></div>
+					<div class="chart-head"><div class="chart-title">Req / Res Size</div><div class="chart-legend"><span><i style="background:{C.purple}"></i>Req</span><span><i style="background:{C.orange}"></i>Res</span></div></div>
 					<div class="chart-wrap"><ChartCanvas id="reqSizeChart" data={agg} keys={['avg_request_size','avg_response_size']} colors={[C.purple,C.orange]} formatter="bytes" {selectedRange} onTooltip={setTooltip} /></div>
 				</div>
 			</div>
@@ -278,38 +374,37 @@
 			<div class="placeholder"><h2>No data yet</h2><p>Metrics appear once agents start collecting nginx logs.</p></div>
 		{/if}
 
-		<div class="visitors-row">
-			<div class="map-panel">
-				<div class="panel-head"><h2>Visitor Map</h2><span class="tag">geo</span></div>
-				<div class="map-wrap">
-					<WorldMap {visitors} {worldGeo} onTooltip={setTooltip} />
+		<div class="map-panel">
+			<div class="panel-head"><h2>Visitor Map</h2><span class="tag">geo</span></div>
+			<div class="map-wrap">
+				<WorldMap {visitors} {worldGeo} onTooltip={setTooltip} />
+			</div>
+		</div>
+
+		<div class="visitors-panel">
+			<div class="panel-head"><h2>Top Visitors</h2><span class="tag">by IP</span></div>
+			{#if visitorsLoading && topVisitors.length === 0}
+				<p class="dim">Loading visitors...</p>
+			{:else if topVisitors.length === 0}
+				<p class="dim">No visitor data yet.</p>
+			{:else}
+				<div class="tbl-scroll">
+					<table>
+						<thead><tr><th class="col-rank">#</th><th>IP Address</th><th class="col-right">Requests</th><th>Country</th><th>City</th></tr></thead>
+						<tbody>
+							{#each topVisitors as v, i}
+								<tr>
+									<td class="col-rank muted">{i+1}</td>
+									<td><code>{v.ip_address}</code></td>
+									<td class="col-right col-accent">{formatNumber(v.request_count)}</td>
+									<td class="country-cell">{#if v.country_code}<img src="https://flagcdn.com/16x12/{v.country_code.toLowerCase()}.png" alt={v.country_code} width="16" height="12"/>{/if}{v.country||'-'}</td>
+									<td class="col-secondary">{v.city||'-'}</td>
+								</tr>
+							{/each}
+						</tbody>
+					</table>
 				</div>
-			</div>
-			<div class="visitors-panel">
-				<div class="panel-head"><h2>Top Visitors</h2><span class="tag">by IP</span></div>
-				{#if visitorsLoading && topVisitors.length === 0}
-					<p class="dim">Loading visitors...</p>
-				{:else if topVisitors.length === 0}
-					<p class="dim">No visitor data yet.</p>
-				{:else}
-					<div class="tbl-scroll">
-						<table>
-							<thead><tr><th class="narrow center">#</th><th>IP Address</th><th class="right">Requests</th><th>Country</th><th>City</th></tr></thead>
-							<tbody>
-								{#each topVisitors as v, i}
-									<tr>
-										<td class="narrow center muted">{i+1}</td>
-										<td><code>{v.ip_address}</code></td>
-										<td class="right strong">{formatNumber(v.request_count)}</td>
-										<td class="country-cell">{#if v.country_code}<img src="https://flagcdn.com/16x12/{v.country_code.toLowerCase()}.png" alt={v.country_code} width="16" height="12"/>{/if}{v.country||'-'}</td>
-										<td>{v.city||'-'}</td>
-									</tr>
-								{/each}
-							</tbody>
-						</table>
-					</div>
-				{/if}
-			</div>
+			{/if}
 		</div>
 
 		<div class="blocked-panel">
@@ -323,9 +418,9 @@
 					<table>
 						<thead>
 							<tr>
-								<th class="narrow center">#</th>
+								<th class="col-rank">#</th>
 								<th>IP Address</th>
-								<th class="right">Events</th>
+								<th class="col-right">Events</th>
 								<th>Country</th>
 								<th>AS Name</th>
 								<th>Agent</th>
@@ -335,9 +430,9 @@
 						<tbody>
 							{#each blocked as b, i}
 								<tr>
-									<td class="narrow center muted">{i+1}</td>
+									<td class="col-rank muted">{i+1}</td>
 									<td><code class="blocked-ip">{b.ip}</code></td>
-									<td class="right strong-red">{formatNumber(b.events_count)}</td>
+									<td class="col-right col-danger">{formatNumber(b.events_count)}</td>
 									<td class="country-cell">
 										{#if b.country_code}
 											<img src="https://flagcdn.com/16x12/{b.country_code.toLowerCase()}.png" alt={b.country_code} width="16" height="12"/>
@@ -361,22 +456,40 @@
 
 <style>
 	/* ── Header ── */
+	.head-left { display: flex; align-items: center; gap: 0.75rem; }
 	.head-actions { display: flex; gap: 0.5rem; align-items: center; }
+
+	.live-dot {
+		width: 8px; height: 8px; border-radius: 50%;
+		background: var(--success);
+		box-shadow: 0 0 8px var(--success), 0 0 16px rgba(66, 201, 144, 0.3);
+		animation: pulse-dot 2s ease-in-out infinite;
+	}
+	@keyframes pulse-dot {
+		0%, 100% { opacity: 1; transform: scale(1); }
+		50% { opacity: 0.6; transform: scale(0.85); }
+	}
 
 	/* ── Buttons ── */
 	.btn-ghost.on { color: var(--accent); border-color: var(--accent); background: var(--accent-dim); }
 
 	/* ── Toolbar ── */
-	.toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; gap: 1rem; flex-wrap: wrap; }
-	.toolbar-filters { display: flex; gap: 0.5rem; }
+	.toolbar {
+		display: flex; justify-content: space-between; align-items: center;
+		margin-bottom: 1.25rem; gap: 0.75rem; flex-wrap: wrap;
+	}
+	.toolbar-filters { display: flex; gap: 0.5rem; flex-wrap: wrap; }
 
 	.sel {
 		padding: 0.4375rem 0.75rem; border: 1px solid var(--border);
 		border-radius: var(--radius); font-size: var(--text-sm);
 		color: var(--text-primary); background: var(--surface);
-		cursor: pointer; min-width: 145px;
+		cursor: pointer; min-width: 140px;
 	}
 	.sel:focus { outline: none; border-color: var(--accent); }
+	.domain-sel { min-width: 200px; }
+	.domain-sel optgroup { font-style: normal; font-weight: 600; color: var(--text-tertiary); padding-top: 0.25rem; }
+	.domain-sel optgroup option { font-weight: 400; color: var(--text-primary); }
 
 	.range-bar {
 		display: flex; background: var(--surface); border: 1px solid var(--border);
@@ -392,26 +505,62 @@
 	.range-btn.active { background: var(--accent); color: #fff; }
 	.range-btn:hover:not(.active) { color: var(--text-primary); background: var(--surface-raised); }
 
-	/* KPI base styles in global.css */
-	.kpi-bad { color: var(--danger); }
+	/* ── KPI Strip ── */
+	.kpi-strip {
+		display: flex; align-items: center; gap: 0;
+		background: var(--surface); border: 1px solid var(--border);
+		border-radius: var(--radius-lg); padding: 0.875rem 0;
+		margin-bottom: 1.25rem; overflow-x: auto;
+	}
+	.kpi-strip .kpi {
+		flex: 1; display: flex; flex-direction: column; align-items: center;
+		gap: 0.2rem; padding: 0.375rem 1rem; min-width: 0;
+		background: none; border: none; border-radius: 0;
+	}
+	.kpi-strip .kpi-num {
+		font-size: var(--text-lg); font-weight: 700; color: var(--text-primary);
+		font-variant-numeric: tabular-nums; letter-spacing: -0.01em;
+		white-space: nowrap;
+	}
+	.kpi-strip .kpi-label {
+		font-size: 0.75rem; color: var(--text-tertiary); font-weight: 500;
+		text-transform: uppercase; letter-spacing: 0.06em;
+		white-space: nowrap;
+	}
+	.kpi-sep {
+		width: 1px; height: 28px; background: var(--border); flex-shrink: 0;
+	}
+	.kpi-bad { color: var(--danger) !important; }
 
-	/* ── Charts ── */
-	.grid-charts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.75rem; margin-bottom: 1.5rem; }
+	/* ── Chart containers ── */
+	.chart-hero { margin-bottom: 0.75rem; }
+
+	.chart-pair {
+		display: grid; grid-template-columns: repeat(2, 1fr);
+		gap: 0.75rem; margin-bottom: 0.75rem;
+	}
+
+	.chart-trio {
+		display: grid; grid-template-columns: repeat(3, 1fr);
+		gap: 0.75rem; margin-bottom: 0.75rem;
+	}
 
 	.chart-box {
 		background: var(--surface); border: 1px solid var(--border);
-		border-radius: var(--radius-lg); padding: 1.125rem 1.25rem;
+		border-radius: var(--radius-lg); padding: 1rem 1.125rem;
+		min-width: 0;
 	}
-	.chart-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.625rem; }
-	.chart-title { font-size: var(--text-sm); font-weight: 600; color: var(--text-primary); margin-bottom: 0.625rem; }
+	.chart-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; }
+	.chart-title { font-size: var(--text-sm); font-weight: 600; color: var(--text-primary); margin-bottom: 0.5rem; }
 	.chart-head .chart-title { margin-bottom: 0; }
 
 	.chart-legend { display: flex; gap: 0.625rem; font-size: var(--text-xs); color: var(--text-secondary); }
 	.chart-legend span { display: flex; align-items: center; gap: 0.25rem; }
 	.chart-legend i { width: 7px; height: 7px; border-radius: 2px; display: inline-block; font-style: normal; }
 
-	.chart-wrap { width: 100%; height: 180px; }
-	.chart-wrap :global(canvas) { width: 100%; height: 100%; cursor: crosshair; }
+	.chart-wrap { width: 100%; height: 170px; }
+	.chart-wrap-lg { height: 220px; }
+	.chart-wrap :global(canvas) { width: 100%; height: 100%; cursor: crosshair; display: block; }
 
 	/* ── Tooltip ── */
 	:global(.chart-tooltip) {
@@ -427,40 +576,58 @@
 	:global(.tooltip-label) { color: var(--text-secondary); min-width: 50px; }
 	:global(.tooltip-val) { font-weight: 600; margin-left: auto; }
 
-	/* ── Placeholder (metrics-specific overrides) ── */
+	/* ── Placeholder ── */
 	.placeholder h2 { font-size: var(--text-lg); color: var(--text-primary); margin: 0; }
 	.placeholder .btn-fill { margin-top: 1rem; }
 
-	/* ── Visitors Row ── */
-	.visitors-row { display: flex; gap: 0.75rem; margin-top: 1.5rem; }
-	.map-panel { flex: 1; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 1.25rem; min-width: 0; display: flex; flex-direction: column; }
-	.map-wrap { width: 100%; flex: 1; min-height: 250px; position: relative; }
+	/* ── Map Panel (full-width) ── */
+	.map-panel {
+		background: var(--surface); border: 1px solid var(--border);
+		border-radius: var(--radius-lg); padding: 1.25rem;
+		margin-top: 0.75rem;
+	}
+	.map-wrap { margin: 0 auto; width: 100%; aspect-ratio: 1 / 1; max-height: 700px; position: relative; }
 	.map-wrap :global(canvas) { display: block; width: 100%; height: 100%; border-radius: var(--radius); }
-	.visitors-panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 1.25rem; width: 40%; min-width: 320px; flex-shrink: 0; }
+
+	/* ── Visitors Panel (full-width) ── */
+	.visitors-panel {
+		background: var(--surface); border: 1px solid var(--border);
+		border-radius: var(--radius-lg); padding: 1.25rem;
+		margin-top: 0.75rem;
+	}
 	.panel-head { display: flex; align-items: center; gap: 0.625rem; margin-bottom: 1rem; }
-	.panel-head h2 { font-size: var(--text-base); font-weight: 600; color: var(--text-primary); }
-	.tag { font-size: var(--text-xs); color: var(--text-tertiary); background: var(--surface-raised); padding: 0.125rem 0.5rem; border-radius: 999px; }
+	.panel-head h2 { font-size: var(--text-base); font-weight: 600; color: var(--text-primary); margin: 0; }
+	.tag { font-size: 0.75rem; color: var(--text-tertiary); background: var(--surface-raised); padding: 0.125rem 0.5rem; border-radius: 999px; letter-spacing: 0.03em; }
 	.dim { color: var(--text-tertiary); font-size: var(--text-sm); }
 
-	/* ── Table ── */
-	.tbl-scroll { overflow-x: auto; }
+	/* ── Tables ── */
+	.tbl-scroll { overflow-x: auto; margin: 0 -0.25rem; }
 	table { width: 100%; border-collapse: collapse; font-size: var(--text-sm); }
-	thead th { text-align: left; padding: 0.5rem 0.75rem; font-weight: 600; color: var(--text-tertiary); font-size: var(--text-xs); border-bottom: 1px solid var(--border); }
-	tbody td { padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--border); color: var(--text-primary); }
+	thead th {
+		text-align: left; padding: 0.4375rem 0.625rem; font-weight: 600;
+		color: var(--text-tertiary); font-size: 0.75rem;
+		border-bottom: 1px solid var(--border);
+		text-transform: uppercase; letter-spacing: 0.04em;
+	}
+	tbody td { padding: 0.4375rem 0.625rem; border-bottom: 1px solid var(--border); color: var(--text-primary); }
 	tbody tr:last-child td { border-bottom: none; }
 	tbody tr:hover { background: var(--surface-raised); }
-	.narrow { width: 3rem; }
-	.center { text-align: center; }
-	.right { text-align: right; }
+	.col-rank { width: 2.25rem; text-align: center; }
+	.col-right { text-align: right; }
 	.muted { color: var(--text-muted); }
-	.strong { font-weight: 600; color: var(--accent); }
-	.country-cell { display: flex; align-items: center; gap: 0.5rem; }
+	.col-accent { font-weight: 600; color: var(--accent); }
+	.col-secondary { color: var(--text-secondary); }
+	.country-cell { display: flex; align-items: center; gap: 0.375rem; white-space: nowrap; }
 
 	/* ── Blocked Panel ── */
-	.blocked-panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 1.25rem; margin-top: 1rem; }
+	.blocked-panel {
+		background: var(--surface); border: 1px solid var(--border);
+		border-radius: var(--radius-lg); padding: 1.25rem;
+		margin-top: 0.75rem;
+	}
 	.blocked-tag { background: rgba(239, 96, 104, 0.12); color: #ef6068; }
 	.blocked-ip { color: #ef6068; font-size: var(--text-sm); }
-	.strong-red { font-weight: 600; color: #ef6068; }
+	.col-danger { font-weight: 600; color: #ef6068; }
 	.as-cell { color: var(--text-secondary); font-size: var(--text-xs); max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 	.agent-cell { color: var(--text-secondary); font-size: var(--text-sm); white-space: nowrap; }
 	.time-cell { color: var(--text-tertiary); font-size: var(--text-xs); white-space: nowrap; }
@@ -470,11 +637,11 @@
 	.export-menu {
 		position: absolute; top: calc(100% + 6px); right: 0; z-index: 100;
 		background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
-		box-shadow: 0 8px 24px rgba(0,0,0,0.25); min-width: 160px; overflow: hidden;
+		box-shadow: 0 8px 24px rgba(0,0,0,0.25); min-width: 140px; overflow: hidden;
 	}
 	.export-menu button {
 		display: flex; align-items: center; gap: 0.5rem; width: 100%; text-align: left;
-		padding: 0.625rem 1rem; background: none; border: none; cursor: pointer;
+		padding: 0.5rem 0.875rem; background: none; border: none; cursor: pointer;
 		font-size: var(--text-sm); color: var(--text-primary); font-family: inherit;
 		transition: background var(--transition);
 	}
@@ -483,7 +650,23 @@
 	@keyframes spin { to { transform: rotate(360deg); } }
 
 	/* ── Responsive ── */
-	.kpi-row { grid-template-columns: repeat(4, 1fr); }
-	@media (max-width: 1200px) { .grid-charts { grid-template-columns: repeat(2,1fr); } .kpi-row { grid-template-columns: repeat(4,1fr); } .kpi:nth-child(4) { border-right: none; } .visitors-row { flex-direction: column; } .visitors-panel { width: 100%; min-width: 0; } }
-	@media (max-width: 768px) { .grid-charts { grid-template-columns: 1fr; } .kpi-row { grid-template-columns: repeat(2,1fr); } .kpi:nth-child(2n) { border-right: none; } .toolbar { flex-direction: column; } .range-bar { flex-wrap: wrap; } }
+	@media (max-width: 1280px) {
+		.chart-trio { grid-template-columns: repeat(2, 1fr); }
+	}
+	@media (max-width: 960px) {
+		.chart-pair { grid-template-columns: 1fr; }
+		.chart-trio { grid-template-columns: 1fr; }
+		.kpi-strip { flex-wrap: wrap; padding: 0.5rem; gap: 0; }
+		.kpi-strip .kpi { flex: 0 0 25%; padding: 0.5rem 0.75rem; }
+		.kpi-sep { display: none; }
+	}
+	@media (max-width: 640px) {
+		.toolbar { flex-direction: column; align-items: stretch; }
+		.toolbar-filters { flex-direction: column; }
+		.sel, .domain-sel { min-width: 0; width: 100%; }
+		.range-bar { flex-wrap: wrap; justify-content: center; }
+		.kpi-strip .kpi { flex: 0 0 50%; }
+		.kpi-strip .kpi-num { font-size: var(--text-base); }
+		.head-actions { flex-wrap: wrap; }
+	}
 </style>

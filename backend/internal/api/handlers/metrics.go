@@ -138,7 +138,7 @@ func defaultRangeConfig(rangeParam string) rangeConfig {
 	case "7d":
 		return rangeConfig{7 * 24 * time.Hour, "1 hour", true, "raw"}
 	case "30d":
-		return rangeConfig{30 * 24 * time.Hour, "6 hours", true, "15min"}
+		return rangeConfig{30 * 24 * time.Hour, "1 day", true, "hourly"}
 	case "90d":
 		return rangeConfig{90 * 24 * time.Hour, "1 day", true, "hourly"}
 	case "all":

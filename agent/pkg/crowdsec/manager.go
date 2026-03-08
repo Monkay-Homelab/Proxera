@@ -161,3 +161,107 @@ func (m *Manager) runJSON(args []string, dest interface{}) error {
 
 	return fmt.Errorf("failed to extract data from cscli output")
 }
+
+// GetBanDuration reads the default ban duration from CrowdSec's profiles.yaml.
+func (m *Manager) GetBanDuration() (string, error) {
+	profilesPath := "/etc/crowdsec/profiles.yaml"
+
+	var data []byte
+	var err error
+	if m.IsDocker() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, "docker", "exec", m.dockerContainer, "cat", profilesPath)
+		data, err = cmd.Output()
+	} else {
+		data, err = exec.Command("cat", profilesPath).Output()
+	}
+	if err != nil {
+		return "4h", nil // CrowdSec default
+	}
+
+	// Parse duration from YAML: find "duration: <value>" under decisions
+	for _, line := range strings.Split(string(data), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "duration:") && !strings.HasPrefix(trimmed, "#") {
+			val := strings.TrimSpace(strings.TrimPrefix(trimmed, "duration:"))
+			if val != "" {
+				return val, nil
+			}
+		}
+	}
+
+	return "4h", nil
+}
+
+// SetBanDuration updates the default ban duration in CrowdSec's profiles.yaml
+// and reloads CrowdSec to apply the change.
+func (m *Manager) SetBanDuration(duration string) error {
+	profilesPath := "/etc/crowdsec/profiles.yaml"
+
+	// Read current profiles.yaml
+	var data []byte
+	var err error
+	if m.IsDocker() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, "docker", "exec", m.dockerContainer, "cat", profilesPath)
+		data, err = cmd.Output()
+	} else {
+		data, err = exec.Command("cat", profilesPath).Output()
+	}
+	if err != nil {
+		return fmt.Errorf("failed to read profiles.yaml: %w", err)
+	}
+
+	// Replace all "duration: <old>" lines (not commented) with new duration
+	lines := strings.Split(string(data), "\n")
+	var result []string
+	replaced := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "duration:") && !strings.HasPrefix(trimmed, "#") {
+			// Preserve indentation
+			indent := line[:len(line)-len(strings.TrimLeft(line, " \t"))]
+			result = append(result, indent+"duration: "+duration)
+			replaced = true
+		} else {
+			result = append(result, line)
+		}
+	}
+
+	if !replaced {
+		return fmt.Errorf("no duration field found in profiles.yaml")
+	}
+
+	newContent := strings.Join(result, "\n")
+
+	// Write back
+	if m.IsDocker() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, "docker", "exec", "-i", m.dockerContainer, "sh", "-c", fmt.Sprintf("cat > %s", profilesPath))
+		cmd.Stdin = strings.NewReader(newContent)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("failed to write profiles.yaml: %s", string(out))
+		}
+	} else {
+		writeCmd := exec.Command("sh", "-c", fmt.Sprintf("cat > %s", profilesPath))
+		writeCmd.Stdin = strings.NewReader(newContent)
+		if out, err := writeCmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("failed to write profiles.yaml: %s", string(out))
+		}
+	}
+
+	// Reload CrowdSec to apply
+	if m.IsDocker() {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, "docker", "exec", m.dockerContainer, "sh", "-c", "kill -HUP 1")
+		cmd.CombinedOutput()
+	} else {
+		exec.Command("systemctl", "reload", "crowdsec").Run()
+	}
+
+	return nil
+}

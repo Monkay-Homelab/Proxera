@@ -85,14 +85,20 @@ export function formatMs(ms: number): string {
 
 export function formatTime(ts: string, selectedRange: string): string {
 	const d = new Date(ts);
-	if (['7d','30d','90d','all'].includes(selectedRange)) {
+	if (['30d','90d','all'].includes(selectedRange)) {
+		return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+	}
+	if (selectedRange === '7d') {
 		return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ' ' + d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
 	}
 	return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
 }
 
-export function formatFullTime(ts: string): string {
+export function formatFullTime(ts: string, selectedRange?: string): string {
 	const d = new Date(ts);
+	if (selectedRange && ['30d','90d','all'].includes(selectedRange)) {
+		return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+	}
 	return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) + ' ' + d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
 }
 

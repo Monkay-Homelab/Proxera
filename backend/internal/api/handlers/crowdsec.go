@@ -531,6 +531,65 @@ func CrowdSecRemoveWhitelist(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"message": response})
 }
 
+// CrowdSecGetBanDuration handles GET /api/agents/:agentId/crowdsec/ban-duration
+func CrowdSecGetBanDuration(c *fiber.Ctx) error {
+	agentID, err := verifyAgentOwnership(c)
+	if err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	if IsLocalAgent(agentID) {
+		duration, err := localAgent.CrowdSecGetBanDuration()
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		}
+		return c.JSON(fiber.Map{"duration": duration})
+	}
+
+	response, err := SendCommandAndWaitForResponse(agentID, models.AgentCommand{
+		Type: "crowdsec_get_ban_duration", Payload: map[string]interface{}{},
+	}, CmdTimeoutDefault)
+	if err != nil {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"duration": response})
+}
+
+// CrowdSecSetBanDuration handles PUT /api/agents/:agentId/crowdsec/ban-duration
+func CrowdSecSetBanDuration(c *fiber.Ctx) error {
+	agentID, err := verifyAgentOwnership(c)
+	if err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	var body struct {
+		Duration string `json:"duration"`
+	}
+	if err := c.BodyParser(&body); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid request body"})
+	}
+	if body.Duration == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Duration is required"})
+	}
+
+	if IsLocalAgent(agentID) {
+		if err := localAgent.CrowdSecSetBanDuration(body.Duration); err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		}
+		return c.JSON(fiber.Map{"message": "Ban duration updated", "duration": body.Duration})
+	}
+
+	response, err := SendCommandAndWaitForResponse(agentID, models.AgentCommand{
+		Type: "crowdsec_set_ban_duration", Payload: map[string]interface{}{
+			"duration": body.Duration,
+		},
+	}, CmdTimeoutDefault)
+	if err != nil {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"message": response, "duration": body.Duration})
+}
+
 // jsonStr marshals a value to a JSON string for WebSocket responses
 func jsonStr(v interface{}) string {
 	b, _ := json.Marshal(v)

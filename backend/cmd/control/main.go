@@ -18,10 +18,12 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/filesystem"
 	"github.com/joho/godotenv"
+	"github.com/proxera/agent/pkg/metrics"
 	"github.com/proxera/backend/internal/api"
 	"github.com/proxera/backend/internal/api/handlers"
 	"github.com/proxera/backend/internal/database"
 	"github.com/proxera/backend/internal/localagent"
+	"github.com/proxera/backend/internal/models"
 	"github.com/proxera/backend/internal/notifications"
 )
 
@@ -112,6 +114,45 @@ func main() {
 
 		localMgr = localagent.New(cfg)
 		localMgr.SetDDNSUpdate(handlers.UpdateDDNSForAgent)
+		localMgr.SetMetricsInsert(func(agentID string, buckets []interface{}) error {
+			converted := make([]models.IncomingMetricsBucket, 0, len(buckets))
+			for _, raw := range buckets {
+				b, ok := raw.(metrics.MetricsBucket)
+				if !ok {
+					continue
+				}
+				converted = append(converted, models.IncomingMetricsBucket{
+					Timestamp:       b.Timestamp.Format("2006-01-02T15:04:05Z07:00"),
+					Domain:          b.Domain,
+					RequestCount:    b.RequestCount,
+					BytesSent:       b.BytesSent,
+					BytesReceived:   b.BytesReceived,
+					Status2xx:       b.Status2xx,
+					Status3xx:       b.Status3xx,
+					Status4xx:       b.Status4xx,
+					Status5xx:       b.Status5xx,
+					AvgLatencyMs:    b.AvgLatencyMs,
+					LatencyP50Ms:    b.LatencyP50Ms,
+					LatencyP95Ms:    b.LatencyP95Ms,
+					LatencyP99Ms:    b.LatencyP99Ms,
+					AvgUpstreamMs:   b.AvgUpstreamMs,
+					AvgRequestSize:  b.AvgRequestSize,
+					AvgResponseSize: b.AvgResponseSize,
+					CacheHits:       b.CacheHits,
+					CacheMisses:     b.CacheMisses,
+					UniqueIPs:       b.UniqueIPs,
+					ConnectionCount: b.ConnectionCount,
+					IPRequestCounts: b.IPRequestCounts,
+				})
+			}
+			if err := handlers.InsertMetricsBuckets(agentID, converted); err != nil {
+				return err
+			}
+			if err := handlers.InsertVisitorIPs(agentID, converted); err != nil {
+				log.Printf("[local-agent] Failed to insert visitor IPs: %v", err)
+			}
+			return nil
+		})
 
 		// Register local agent (deferred until first admin user exists)
 		if _, err := localMgr.RegisterLocalAgent(); err != nil {

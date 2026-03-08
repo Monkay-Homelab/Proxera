@@ -87,6 +87,7 @@ func CreateAlertRule(c *fiber.Ctx) error {
 		"cert_renewal_failed": true, "error_rate": true,
 		"high_latency": true, "traffic_spike": true,
 		"host_down": true, "bandwidth_threshold": true,
+		"crowdsec_ban": true,
 	}
 	if !validTypes[body.AlertType] {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid alert_type"})
@@ -652,6 +653,7 @@ func QuickSetupAlerts(c *fiber.Ctx) error {
 		{"traffic_spike", "Traffic spike alert", `{"multiplier":3,"baseline_minutes":60,"domains":["all"]}`},
 		{"host_down", "Host down alert", `{"domains":["all"],"window_minutes":1}`},
 		{"bandwidth_threshold", "Bandwidth threshold alert", `{"threshold_gb":10,"period_hours":1,"domains":["all"]}`},
+		{"crowdsec_ban", "CrowdSec ban alert", `{"agent_ids":["all"],"min_events":1}`},
 	}
 
 	created := 0

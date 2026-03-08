@@ -1,4 +1,5 @@
 <script>
+	import { onMount, onDestroy } from 'svelte';
 	import { chartLabels, formatBytes, formatNumber, formatMs, formatTime, formatFullTime, esc } from '$lib/metricsUtils';
 
 	export let id = '';
@@ -12,6 +13,7 @@
 
 	let canvas;
 	let meta = {};
+	let resizeObserver;
 
 	function fmtVal(val) {
 		if (formatter === 'bytes') return formatBytes(val);
@@ -19,11 +21,22 @@
 		return formatNumber(Math.round(val));
 	}
 
+	onMount(() => {
+		if (!canvas) return;
+		resizeObserver = new ResizeObserver(() => { draw(); });
+		resizeObserver.observe(canvas.parentElement);
+	});
+
+	onDestroy(() => {
+		if (resizeObserver) resizeObserver.disconnect();
+	});
+
 	function draw() {
 		if (!canvas || !data || data.length === 0) return;
 		const ctx = canvas.getContext('2d');
 		const dpr = window.devicePixelRatio || 1;
 		const rect = canvas.getBoundingClientRect();
+		if (rect.width === 0 || rect.height === 0) return;
 		canvas.width = rect.width * dpr; canvas.height = rect.height * dpr;
 		ctx.scale(dpr, dpr);
 		const w = rect.width, h = rect.height;
@@ -144,7 +157,7 @@
 		if (relX < -10 || relX > cW + 10 || d.length === 0) { onTooltip({ visible: false }); redraw(meta); return; }
 		const idx = Math.max(0, Math.min(d.length-1, Math.round((relX/cW)*(d.length-1))));
 		const pt = d[idx];
-		let html = `<div class="tooltip-time">${esc(formatFullTime(pt.time))}</div>`;
+		let html = `<div class="tooltip-time">${esc(formatFullTime(pt.time, selectedRange))}</div>`;
 		for (let ki = 0; ki < k.length; ki++) {
 			const val = pt[k[ki]]||0, label = chartLabels[k[ki]]||k[ki];
 			html += `<div class="tooltip-row"><span class="tooltip-dot" style="background:${cc[ki]}"></span><span class="tooltip-label">${esc(label)}</span><span class="tooltip-val">${esc(fmtVal(val))}</span></div>`;
