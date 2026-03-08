@@ -15,25 +15,25 @@ import (
 // Dispatch sends an alert through all channels linked to a rule, respecting cooldown.
 func Dispatch(ctx context.Context, userID int, ruleID int, cooldownMinutes int, alert models.AlertPayload) {
 	// Build cooldown key from metadata qualifier
+	// For crowdsec_ban, use IP as qualifier so each banned IP gets its own alert
 	qualifier := ""
-	if v, ok := alert.Metadata["agent_id"]; ok {
+	metaKey := ""
+	if v, ok := alert.Metadata["ip"]; ok {
 		qualifier, _ = v.(string)
+		metaKey = "ip"
+	} else if v, ok := alert.Metadata["agent_id"]; ok {
+		qualifier, _ = v.(string)
+		metaKey = "agent_id"
 	} else if v, ok := alert.Metadata["domain"]; ok {
 		qualifier, _ = v.(string)
+		metaKey = "domain"
 	} else if v, ok := alert.Metadata["cert_id"]; ok {
 		qualifier = fmt.Sprintf("%v", v)
+		metaKey = "cert_id"
 	}
 
 	// Skip if there's already an unresolved alert for the same type+qualifier
 	if qualifier != "" {
-		metaKey := ""
-		if _, ok := alert.Metadata["agent_id"]; ok {
-			metaKey = "agent_id"
-		} else if _, ok := alert.Metadata["domain"]; ok {
-			metaKey = "domain"
-		} else if _, ok := alert.Metadata["cert_id"]; ok {
-			metaKey = "cert_id"
-		}
 		if metaKey != "" {
 			var existing int
 			database.DB.QueryRow(ctx, `

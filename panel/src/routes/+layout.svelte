@@ -10,7 +10,7 @@
 
 	let { children } = $props();
 
-	const publicPaths = ['/login', '/register', '/verify-email'];
+	const publicPaths = ['/login', '/register', '/verify-email', '/setup'];
 	let authChecked = $state(false);
 
 	let isPublicPage = $derived(publicPaths.some(p => $page.url.pathname.startsWith(p)));

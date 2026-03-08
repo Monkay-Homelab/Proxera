@@ -55,6 +55,12 @@ func SetupRoutes(app *fiber.App) {
 	auth.Get("/verify-email", handlers.VerifyEmail)
 	auth.Post("/resend-verification", handlers.ResendVerification)
 
+	// Setup routes (protected — first-run setup steps)
+	setup := api.Group("/setup")
+	setup.Use(middleware.Auth, middleware.FlatRateLimit)
+	setup.Get("/status", handlers.SetupStatus)
+	setup.Post("/crowdsec-eula", middleware.AdminOnly, handlers.AcceptCrowdSecEULA)
+
 	// User routes (protected)
 	user := api.Group("/user")
 	user.Use(middleware.Auth, middleware.FlatRateLimit)

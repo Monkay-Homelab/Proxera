@@ -212,6 +212,11 @@ func Register(c *fiber.Ctx) error {
 		resp["message"] = "Account created. Please check your email to verify your account."
 	}
 
+	// For first admin on AIO, flag that CrowdSec setup is needed
+	if user.Role == "admin" {
+		resp["setup_required"] = true
+	}
+
 	return c.Status(fiber.StatusCreated).JSON(resp)
 }
 
