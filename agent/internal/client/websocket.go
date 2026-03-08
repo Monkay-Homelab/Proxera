@@ -1088,6 +1088,40 @@ func (ws *WSClient) handleMessage(msg *Message) {
 			ws.SendResponse("crowdsec_whitelist_remove", true, fmt.Sprintf("IP %s removed from whitelist", ip), "")
 		})
 
+	case "crowdsec_get_ban_duration":
+		log.Println("Received crowdsec_get_ban_duration command")
+		ws.runCommand("crowdsec_get_ban_duration", func() {
+			if ws.crowdsec == nil {
+				ws.SendResponse("crowdsec_get_ban_duration", false, "", "crowdsec manager not initialized")
+				return
+			}
+			duration, err := ws.crowdsec.GetBanDuration()
+			if err != nil {
+				ws.SendResponse("crowdsec_get_ban_duration", false, "", err.Error())
+				return
+			}
+			ws.SendResponse("crowdsec_get_ban_duration", true, duration, "")
+		})
+
+	case "crowdsec_set_ban_duration":
+		log.Println("Received crowdsec_set_ban_duration command")
+		ws.runCommand("crowdsec_set_ban_duration", func() {
+			if ws.crowdsec == nil {
+				ws.SendResponse("crowdsec_set_ban_duration", false, "", "crowdsec manager not initialized")
+				return
+			}
+			duration, _ := msg.Payload["duration"].(string)
+			if duration == "" {
+				ws.SendResponse("crowdsec_set_ban_duration", false, "", "duration is required")
+				return
+			}
+			if err := ws.crowdsec.SetBanDuration(duration); err != nil {
+				ws.SendResponse("crowdsec_set_ban_duration", false, "", err.Error())
+				return
+			}
+			ws.SendResponse("crowdsec_set_ban_duration", true, fmt.Sprintf("Ban duration updated to %s", duration), "")
+		})
+
 	case "list_backups":
 		log.Println("Received list_backups command")
 		ws.runCommand("list_backups", func() {

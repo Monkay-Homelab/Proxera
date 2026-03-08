@@ -18,19 +18,6 @@
 	let saving = false;
 	let error = '';
 
-	// Export/Import state
-	let showExportModal = false;
-	let showImportModal = false;
-	let exportPassword = '';
-	let importPassword = '';
-	let importFile = null;
-	let importData = null;
-	let exporting = false;
-	let importing = false;
-	let exportError = '';
-	let importError = '';
-	let importResult = null;
-
 	onMount(() => {
 		fetchProviders();
 	});
@@ -96,92 +83,6 @@
 		return true;
 	}
 
-	function openExportModal() {
-		showExportModal = true;
-		exportPassword = '';
-		exportError = '';
-	}
-
-	function openImportModal() {
-		showImportModal = true;
-		importPassword = '';
-		importFile = null;
-		importData = null;
-		importError = '';
-		importResult = null;
-	}
-
-	async function handleExport() {
-		exportError = '';
-		exporting = true;
-		try {
-			const response = await api('/api/dns/export', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ password: exportPassword })
-			});
-			const data = await response.json();
-			if (!response.ok) throw new Error(data.error || 'Export failed');
-
-			// Download as JSON file
-			const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-			const url = URL.createObjectURL(blob);
-			const a = document.createElement('a');
-			a.href = url;
-			a.download = `proxera-dns-backup-${new Date().toISOString().slice(0, 10)}.json`;
-			a.click();
-			URL.revokeObjectURL(url);
-			showExportModal = false;
-		} catch (err) {
-			exportError = err.message;
-		} finally {
-			exporting = false;
-		}
-	}
-
-	function handleFileSelect(e) {
-		const file = e.target.files?.[0];
-		if (!file) return;
-		importFile = file;
-		importError = '';
-		importResult = null;
-		const reader = new FileReader();
-		reader.onload = (ev) => {
-			try {
-				importData = JSON.parse(ev.target.result);
-				if (!importData.ciphertext || !importData.salt) {
-					throw new Error('Not a valid Proxera DNS backup file');
-				}
-			} catch (err) {
-				importError = err.message;
-				importData = null;
-			}
-		};
-		reader.readAsText(file);
-	}
-
-	async function handleImport() {
-		importError = '';
-		importResult = null;
-		importing = true;
-		try {
-			const response = await api('/api/dns/import', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ password: importPassword, backup: importData })
-			});
-			const data = await response.json();
-			if (!response.ok) throw new Error(data.error || 'Import failed');
-			importResult = data;
-			await fetchProviders();
-			navRefresh.update(n => n + 1);
-		} catch (err) {
-			importError = err.message;
-		} finally {
-			importing = false;
-		}
-	}
-
 	async function handleSubmit() {
 		saving = true;
 		error = '';
@@ -222,16 +123,6 @@
 	<header class="page-head">
 		<h1>DNS Management</h1>
 		<div class="head-actions">
-			{#if providers.length > 0}
-				<button class="btn-ghost" onclick={openExportModal} title="Export DNS providers">
-					<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-					Export
-				</button>
-			{/if}
-			<button class="btn-ghost" onclick={openImportModal} title="Import DNS providers">
-				<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-				Import
-			</button>
 			<button class="btn-fill" onclick={openModal}>
 				<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
 				Add Domain
@@ -506,79 +397,6 @@
 	</div>
 {/if}
 
-{#if showExportModal}
-	<!-- svelte-ignore a11y_no_static_element_interactions -->
-	<div class="overlay" onclick={() => showExportModal = false} onkeydown={() => {}}>
-		<!-- svelte-ignore a11y_no_static_element_interactions -->
-		<div class="modal modal-sm" onclick={(e) => e.stopPropagation()} onkeydown={() => {}}>
-			<h2>Export DNS Providers</h2>
-			<p class="modal-sub">Your credentials will be encrypted with the password you provide. Keep this password safe — it's required to restore the backup.</p>
-
-			{#if exportError}
-				<div class="error-msg">{exportError}</div>
-			{/if}
-
-			<div class="form-group">
-				<label for="export-pw">Encryption Password</label>
-				<input id="export-pw" type="password" class="input" bind:value={exportPassword} placeholder="Min. 8 characters" autocomplete="off" />
-			</div>
-
-			<div class="modal-foot">
-				<button class="btn-ghost" onclick={() => showExportModal = false}>Cancel</button>
-				<button class="btn-fill" onclick={handleExport} disabled={exportPassword.length < 8 || exporting}>
-					{exporting ? 'Encrypting...' : 'Download Backup'}
-				</button>
-			</div>
-		</div>
-	</div>
-{/if}
-
-{#if showImportModal}
-	<!-- svelte-ignore a11y_no_static_element_interactions -->
-	<div class="overlay" onclick={() => showImportModal = false} onkeydown={() => {}}>
-		<!-- svelte-ignore a11y_no_static_element_interactions -->
-		<div class="modal modal-sm" onclick={(e) => e.stopPropagation()} onkeydown={() => {}}>
-			<h2>Import DNS Providers</h2>
-			<p class="modal-sub">Select a Proxera DNS backup file and enter the password used during export.</p>
-
-			{#if importError}
-				<div class="error-msg">{importError}</div>
-			{/if}
-
-			{#if importResult}
-				<div class="success-msg">
-					Imported {importResult.imported} provider{importResult.imported !== 1 ? 's' : ''}{importResult.skipped > 0 ? `, skipped ${importResult.skipped} duplicate${importResult.skipped !== 1 ? 's' : ''}` : ''}.
-				</div>
-			{:else}
-				<div class="form-group">
-					<label for="import-file">Backup File</label>
-					<input id="import-file" type="file" accept=".json" class="input" onchange={handleFileSelect} />
-				</div>
-
-				{#if importData}
-					<div class="form-group">
-						<label for="import-pw">Decryption Password</label>
-						<input id="import-pw" type="password" class="input" bind:value={importPassword} placeholder="Password used during export" autocomplete="off" />
-					</div>
-				{/if}
-
-				<div class="modal-foot">
-					<button class="btn-ghost" onclick={() => showImportModal = false}>Cancel</button>
-					<button class="btn-fill" onclick={handleImport} disabled={!importData || !importPassword || importing}>
-						{importing ? 'Importing...' : 'Import'}
-					</button>
-				</div>
-			{/if}
-
-			{#if importResult}
-				<div class="modal-foot">
-					<button class="btn-fill" onclick={() => showImportModal = false}>Done</button>
-				</div>
-			{/if}
-		</div>
-	</div>
-{/if}
-
 <style>
 	/* ── Header actions ── */
 	.head-actions { display: flex; gap: 0.5rem; align-items: center; }
@@ -640,14 +458,6 @@
 	}
 	.form-hint { display: block; font-size: var(--text-xs); color: var(--text-tertiary); margin-top: 0.375rem; }
 	.form-hint code { font-family: var(--font-mono); background: var(--surface-raised); padding: 0.1em 0.3em; border-radius: 3px; }
-
-	/* ── Import/Export ── */
-	.modal-sm { max-width: 480px; }
-	.success-msg {
-		padding: 0.75rem 1rem; border-radius: var(--radius);
-		background: var(--green-dim, #10b98112); border: 1px solid var(--green, #10b981);
-		color: var(--green, #10b981); font-size: var(--text-sm); margin-bottom: 1rem;
-	}
 
 	/* ── Responsive ── */
 	@media (max-width: 768px) {

@@ -110,7 +110,7 @@ func (b *BouncerSync) writeBlocklist() {
 		return
 	}
 
-	decisions, err := b.manager.ListDecisions()
+	decisions, err := b.manager.ListAllDecisions()
 	if err != nil {
 		log.Printf("[crowdsec-bouncer] Failed to list decisions: %v", err)
 		return

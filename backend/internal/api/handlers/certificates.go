@@ -126,37 +126,78 @@ func IssueCertificate(c *fiber.Ctx) error {
 		})
 	}
 
-	// Get provider type and credentials for DNS-01 challenge
-	providerType, creds, err := GetProviderCreds(req.ProviderID, userID, role)
-	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Failed to get provider credentials",
-		})
+	// Insert pending record immediately
+	primaryDomain := req.Domains[0]
+	san := ""
+	if len(req.Domains) > 1 {
+		san = strings.Join(req.Domains[1:], ",")
 	}
 
-	// Get user email for ACME registration
-	var email string
+	now := time.Now()
+	var certID int
 	err = database.DB.QueryRow(
 		context.Background(),
-		`SELECT email FROM users WHERE id = $1`,
-		userID,
+		`INSERT INTO certificates (user_id, provider_id, domain, san, certificate_pem, private_key_pem, issuer_pem, cert_url, status, challenge_type, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, '', '', '', '', 'pending', 'dns-01', $5, $5)
+		 RETURNING id`,
+		userID, req.ProviderID, primaryDomain, san, now,
+	).Scan(&certID)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Failed to create certificate record",
+		})
+	}
+
+	// Return the pending record immediately
+	resp := CertificateResponse{
+		ID:            certID,
+		ProviderID:    req.ProviderID,
+		Domain:        primaryDomain,
+		SAN:           san,
+		Status:        "pending",
+		ChallengeType: "dns-01",
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+
+	// Issue certificate in the background
+	go issueCertInBackground(certID, userID, role, req)
+
+	return c.Status(fiber.StatusCreated).JSON(resp)
+}
+
+// issueCertInBackground performs the ACME challenge and updates the DB record
+func issueCertInBackground(certID, userID int, role string, req IssueCertificateRequest) {
+	setError := func(msg string) {
+		log.Printf("[ACME] Certificate %d failed: %s", certID, msg)
+		database.DB.Exec(context.Background(),
+			`UPDATE certificates SET status = 'error', updated_at = NOW() WHERE id = $1`,
+			certID,
+		)
+	}
+
+	providerType, creds, err := GetProviderCreds(req.ProviderID, userID, role)
+	if err != nil {
+		setError("Failed to get provider credentials")
+		return
+	}
+
+	var email string
+	err = database.DB.QueryRow(context.Background(),
+		`SELECT email FROM users WHERE id = $1`, userID,
 	).Scan(&email)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Failed to get user email",
-		})
+		setError("Failed to get user email")
+		return
 	}
 
-	// Get or create ACME account key
 	accountKey, err := acme.GetOrCreateAccountKey(userID)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": fmt.Sprintf("Failed to get ACME account key: %s", err.Error()),
-		})
+		setError(fmt.Sprintf("Failed to get ACME account key: %s", err.Error()))
+		return
 	}
 
-	// Issue certificate with 3-minute timeout
-	log.Printf("[ACME] Issuing certificate for domains: %v (user %d)", req.Domains, userID)
+	log.Printf("[ACME] Issuing certificate %d for domains: %v (user %d)", certID, req.Domains, userID)
 
 	type acmeResult struct {
 		cert *certificate.Resource
@@ -172,17 +213,13 @@ func IssueCertificate(c *fiber.Ctx) error {
 	select {
 	case result := <-resultCh:
 		if result.err != nil {
-			log.Printf("[ACME] Failed to issue certificate: %v", result.err)
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-				"error": fmt.Sprintf("Failed to issue certificate: %s", result.err.Error()),
-			})
+			setError(fmt.Sprintf("ACME challenge failed: %s", result.err.Error()))
+			return
 		}
 		cert = result.cert
 	case <-time.After(3 * time.Minute):
-		log.Printf("[ACME] Certificate issuance timed out for domains: %v", req.Domains)
-		return c.Status(fiber.StatusGatewayTimeout).JSON(fiber.Map{
-			"error": "Certificate issuance timed out (3 minutes). The ACME provider may be slow — try again later.",
-		})
+		setError("Certificate issuance timed out (3 minutes)")
+		return
 	}
 
 	// Parse certificate to get expiry date
@@ -198,51 +235,76 @@ func IssueCertificate(c *fiber.Ctx) error {
 	// Encrypt private key before storing
 	encPrivateKey, err := crypto.Encrypt(string(cert.PrivateKey))
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Failed to encrypt private key",
-		})
-	}
-
-	// Store in database
-	primaryDomain := req.Domains[0]
-	san := ""
-	if len(req.Domains) > 1 {
-		san = strings.Join(req.Domains[1:], ",")
+		setError("Failed to encrypt private key")
+		return
 	}
 
 	now := time.Now()
-	var certID int
-	err = database.DB.QueryRow(
-		context.Background(),
-		`INSERT INTO certificates (user_id, provider_id, domain, san, certificate_pem, private_key_pem, issuer_pem, cert_url, status, issued_at, expires_at, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'active', $9, $10, $11, $11)
-		 RETURNING id`,
-		userID, req.ProviderID, primaryDomain, san,
+	_, err = database.DB.Exec(context.Background(),
+		`UPDATE certificates SET certificate_pem = $1, private_key_pem = $2, issuer_pem = $3,
+		 cert_url = $4, status = 'active', issued_at = $5, expires_at = $6, updated_at = $5
+		 WHERE id = $7`,
 		string(cert.Certificate), encPrivateKey, string(cert.IssuerCertificate),
-		cert.CertURL, now, expiresAt, now,
-	).Scan(&certID)
+		cert.CertURL, now, expiresAt, certID,
+	)
 	if err != nil {
-		log.Printf("[ACME] Failed to store certificate: %v", err)
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Certificate issued but failed to store",
-		})
+		log.Printf("[ACME] Certificate %d issued but failed to store: %v", certID, err)
+		return
 	}
 
-	log.Printf("[ACME] Certificate issued and stored: id=%d domain=%s expires=%s", certID, primaryDomain, expiresAt)
+	log.Printf("[ACME] Certificate issued and stored: id=%d domain=%s expires=%s", certID, req.Domains[0], expiresAt)
+}
 
-	return c.Status(fiber.StatusCreated).JSON(CertificateResponse{
-		ID:            certID,
-		ProviderID:    req.ProviderID,
-		Domain:        primaryDomain,
-		SAN:           san,
-		CertURL:       cert.CertURL,
-		Status:        "active",
-		ChallengeType: "dns-01",
-		IssuedAt:      &now,
-		ExpiresAt:     &expiresAt,
-		CreatedAt:     now,
-		UpdatedAt:     now,
+// RetryCertificate handles POST /api/certificates/:id/retry
+func RetryCertificate(c *fiber.Ctx) error {
+	userID, _ := c.Locals("user_id").(int)
+	role, _ := c.Locals("user_role").(string)
+
+	certID, err := strconv.Atoi(c.Params("id"))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid certificate ID"})
+	}
+
+	// Fetch the failed cert record
+	var providerID int
+	var domain, san, status string
+	err = database.DB.QueryRow(context.Background(),
+		`SELECT provider_id, domain, COALESCE(san, ''), status FROM certificates WHERE id = $1 AND user_id = $2`,
+		certID, userID,
+	).Scan(&providerID, &domain, &san, &status)
+	if err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Certificate not found"})
+	}
+
+	if status != "error" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Only failed certificates can be retried"})
+	}
+
+	// Verify provider still exists
+	exists, err := verifyProviderOwnership(providerID, userID, role)
+	if err != nil || !exists {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "DNS provider not found"})
+	}
+
+	// Rebuild domain list from domain + SAN
+	domains := []string{domain}
+	if san != "" {
+		domains = append(domains, strings.Split(san, ",")...)
+	}
+
+	// Reset to pending
+	database.DB.Exec(context.Background(),
+		`UPDATE certificates SET status = 'pending', updated_at = NOW() WHERE id = $1`,
+		certID,
+	)
+
+	// Re-issue in background
+	go issueCertInBackground(certID, userID, role, IssueCertificateRequest{
+		ProviderID: providerID,
+		Domains:    domains,
 	})
+
+	return c.JSON(fiber.Map{"status": "pending", "id": certID})
 }
 
 func GetCertificate(c *fiber.Ctx) error {

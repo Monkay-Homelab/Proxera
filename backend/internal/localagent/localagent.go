@@ -202,6 +202,18 @@ func (m *Manager) RegisterLocalAgent() (string, error) {
 
 // Start begins the local agent background tasks (heartbeat, metrics collection, bouncer sync).
 func (m *Manager) Start() {
+	// Read metrics interval from DB (set via agent settings UI)
+	if m.agentID != "" {
+		var dbInterval int
+		err := database.DB.QueryRow(context.Background(),
+			`SELECT COALESCE(metrics_interval, 300) FROM agents WHERE agent_id = $1`, m.agentID,
+		).Scan(&dbInterval)
+		if err == nil && dbInterval >= 10 {
+			m.metricsInterval = time.Duration(dbInterval) * time.Second
+			log.Printf("[local-agent] Metrics interval from DB: %ds", dbInterval)
+		}
+	}
+
 	m.wg.Add(2)
 	go m.heartbeatLoop()
 	go m.metricsLoop()
@@ -494,6 +506,10 @@ func (m *Manager) CrowdSecAddWhitelist(ip, description string) error {
 	return m.crowdsec.AddWhitelist(crowdsec.WhitelistEntry{IP: ip, Description: description})
 }
 func (m *Manager) CrowdSecRemoveWhitelist(ip string) error { return m.crowdsec.RemoveWhitelist(ip) }
+func (m *Manager) CrowdSecGetBanDuration() (string, error) { return m.crowdsec.GetBanDuration() }
+func (m *Manager) CrowdSecSetBanDuration(duration string) error {
+	return m.crowdsec.SetBanDuration(duration)
+}
 
 // --- First-run detection ---
 

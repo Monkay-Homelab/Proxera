@@ -61,6 +61,26 @@
 		{ name: 'crowdsecurity/grafana', desc: 'Grafana brute-force and CVE detection' },
 	];
 
+	// Settings state
+	let settingsBanDuration = '';
+	let settingsLoading = false;
+	let settingsSaving = false;
+
+	const banDurations = [
+		{ value: '1h', label: '1 hour' },
+		{ value: '2h', label: '2 hours' },
+		{ value: '4h', label: '4 hours' },
+		{ value: '8h', label: '8 hours' },
+		{ value: '12h', label: '12 hours' },
+		{ value: '24h', label: '24 hours' },
+		{ value: '48h', label: '48 hours' },
+		{ value: '168h', label: '7 days' },
+		{ value: '720h', label: '30 days' },
+		{ value: '2160h', label: '90 days' },
+		{ value: '8760h', label: '1 year' },
+		{ value: '239976h', label: 'Indefinite (~9999 days)' },
+	];
+
 	let installingBouncers = new Set();
 
 	const popularBouncers = [
@@ -217,6 +237,11 @@
 				case 'metrics':
 					metricsData = await apiGet('/metrics');
 					break;
+				case 'settings': {
+					const data = await apiGet('/ban-duration');
+					settingsBanDuration = data.duration || '4h';
+					break;
+				}
 			}
 		} catch (err) {
 			error = err.message;
@@ -368,6 +393,26 @@
 		}
 	}
 
+	async function saveBanDuration() {
+		settingsSaving = true;
+		try {
+			const res = await api(`/api/agents/${agentId}/crowdsec/ban-duration`, {
+				method: 'PUT',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ duration: settingsBanDuration })
+			});
+			if (!res.ok) {
+				const data = await res.json().catch(() => ({}));
+				throw new Error(data.error || 'Failed to save');
+			}
+			toastSuccess('Ban duration updated');
+		} catch (err) {
+			toastError('Failed to update ban duration: ' + err.message);
+		} finally {
+			settingsSaving = false;
+		}
+	}
+
 	function parseMetrics(data) {
 		if (!data) return null;
 		if (typeof data === 'string') {
@@ -484,7 +529,7 @@
 	{:else}
 		<!-- Management Interface -->
 		<div class="tabs">
-			{#each ['overview', 'decisions', 'alerts', 'collections', 'whitelist', 'bouncers', 'metrics'] as tab}
+			{#each ['overview', 'decisions', 'alerts', 'collections', 'whitelist', 'bouncers', 'metrics', 'settings'] as tab}
 				<button
 					class="tab"
 					class:active={activeTab === tab}
@@ -973,6 +1018,26 @@
 						{/if}
 					{/if}
 				</div>
+
+			{:else if activeTab === 'settings'}
+				<div class="section">
+					<h3>Ban Duration</h3>
+					<p class="section-desc">Set the default duration for automatic bans triggered by CrowdSec scenarios. This applies to all new detections — existing bans are not affected.</p>
+					<div class="settings-field">
+						<label for="ban-duration">Default ban duration</label>
+						<div class="settings-row">
+							<select id="ban-duration" bind:value={settingsBanDuration} class="select settings-select">
+								{#each banDurations as d}
+									<option value={d.value}>{d.label}</option>
+								{/each}
+							</select>
+							<button class="btn-fill" on:click={saveBanDuration} disabled={settingsSaving}>
+								{settingsSaving ? 'Saving...' : 'Save'}
+							</button>
+						</div>
+					</div>
+				</div>
+
 			{/if}
 		</div>
 	{/if}
@@ -1220,6 +1285,12 @@
 	.popular-desc { font-size: var(--text-xs); color: var(--text-secondary); }
 	.popular-pkg { font-size: var(--text-xs); color: var(--text-tertiary); font-family: var(--font-mono); }
 	.bouncer-actions { display: flex; flex-direction: column; gap: 0.375rem; flex-shrink: 0; }
+
+	/* ── Settings ── */
+	.settings-field { max-width: 480px; }
+	.settings-field label { display: block; font-weight: 500; margin-bottom: 0.5rem; color: var(--text-primary); font-size: var(--text-sm); }
+	.settings-row { display: flex; gap: 0.75rem; align-items: center; }
+	.settings-select { flex: 1; min-width: 200px; }
 
 	/* ── States ── */
 	.empty { color: var(--text-tertiary); font-size: var(--text-sm); font-style: italic; }

@@ -14,7 +14,7 @@ type AlertRule struct {
 	Enabled         bool            `json:"enabled"`
 	CooldownMinutes int             `json:"cooldown_minutes"`
 	LastTriggeredAt *time.Time      `json:"last_triggered_at"`
-	ChannelIDs      []int           `json:"channel_ids,omitempty"`
+	ChannelIDs      []int           `json:"channel_ids"`
 	CreatedAt       time.Time       `json:"created_at"`
 	UpdatedAt       time.Time       `json:"updated_at"`
 }

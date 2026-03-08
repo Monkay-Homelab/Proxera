@@ -38,6 +38,8 @@ type LocalAgent interface {
 	CrowdSecListWhitelists() (interface{}, error)
 	CrowdSecAddWhitelist(ip, description string) error
 	CrowdSecRemoveWhitelist(ip string) error
+	CrowdSecGetBanDuration() (string, error)
+	CrowdSecSetBanDuration(duration string) error
 }
 
 var localAgent LocalAgent

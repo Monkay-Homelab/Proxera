@@ -1,44 +1,86 @@
 <script>
-	import { countryCentroids, formatNumber, esc } from '$lib/metricsUtils';
+	import { onDestroy } from 'svelte';
+	import { formatNumber, esc } from '$lib/metricsUtils';
 
 	export let visitors = [];
 	export let worldGeo = null;
 	export let onTooltip = () => {};
 
 	let canvas;
-	let mapDots = [];
+	let countryHitAreas = [];
+	let resizeObserver;
 
-	function projectLng(lng, w) { return ((lng + 180) / 360) * w; }
-	function projectLat(lat, h) { return ((90 - lat) / 180) * h; }
+	/** ISO 3166-1 numeric → alpha-2 mapping for country identification */
+	const numToAlpha2 = {
+		'4':'AF','8':'AL','12':'DZ','24':'AO','32':'AR','36':'AU','40':'AT','31':'AZ',
+		'50':'BD','56':'BE','204':'BJ','68':'BO','70':'BA','72':'BW','76':'BR','100':'BG',
+		'854':'BF','108':'BI','116':'KH','120':'CM','124':'CA','140':'CF','148':'TD','152':'CL',
+		'156':'CN','170':'CO','180':'CD','178':'CG','188':'CR','384':'CI','191':'HR','192':'CU',
+		'196':'CY','203':'CZ','208':'DK','262':'DJ','214':'DO','218':'EC','818':'EG','222':'SV',
+		'226':'GQ','232':'ER','233':'EE','748':'SZ','231':'ET','246':'FI','250':'FR','266':'GA',
+		'270':'GM','268':'GE','276':'DE','288':'GH','300':'GR','320':'GT','324':'GN','624':'GW',
+		'328':'GY','332':'HT','340':'HN','348':'HU','352':'IS','356':'IN','360':'ID','364':'IR',
+		'368':'IQ','372':'IE','376':'IL','380':'IT','388':'JM','392':'JP','400':'JO','398':'KZ',
+		'404':'KE','408':'KP','410':'KR','414':'KW','417':'KG','418':'LA','428':'LV','422':'LB',
+		'426':'LS','430':'LR','434':'LY','440':'LT','442':'LU','450':'MG','454':'MW','458':'MY',
+		'466':'ML','478':'MR','484':'MX','498':'MD','496':'MN','499':'ME','504':'MA','508':'MZ',
+		'104':'MM','516':'NA','524':'NP','528':'NL','554':'NZ','558':'NI','562':'NE','566':'NG',
+		'807':'MK','578':'NO','512':'OM','586':'PK','591':'PA','598':'PG','600':'PY','604':'PE',
+		'608':'PH','616':'PL','620':'PT','634':'QA','642':'RO','643':'RU','646':'RW','682':'SA',
+		'686':'SN','688':'RS','694':'SL','702':'SG','703':'SK','705':'SI','706':'SO','710':'ZA',
+		'728':'SS','724':'ES','144':'LK','729':'SD','740':'SR','752':'SE','756':'CH','760':'SY',
+		'158':'TW','762':'TJ','834':'TZ','764':'TH','768':'TG','780':'TT','788':'TN','792':'TR',
+		'795':'TM','800':'UG','804':'UA','784':'AE','826':'GB','840':'US','858':'UY','860':'UZ',
+		'862':'VE','704':'VN','887':'YE','894':'ZM','716':'ZW','10':'AQ','112':'BY','860':'UZ',
+		'20':'AD','174':'KM','242':'FJ','296':'KI','583':'FM','520':'NR','585':'PW','882':'WS',
+		'90':'SB','776':'TO','548':'VU','275':'PS','-99':'CY'
+	};
 
-	function drawGeoShape(ctx, coords, type, w, h) {
-		if (type === 'Polygon') {
-			for (const ring of coords) drawRing(ctx, ring, w, h);
-		} else if (type === 'MultiPolygon') {
-			for (const polygon of coords) {
-				for (const ring of polygon) drawRing(ctx, ring, w, h);
+	let mapRect = { ox: 0, oy: 0, mw: 0, mh: 0 };
+
+	function projectLng(lng) { return mapRect.ox + ((lng + 180) / 360) * mapRect.mw; }
+	function projectLat(lat) { return mapRect.oy + ((90 - lat) / 180) * mapRect.mh; }
+
+	function calcMapRect(w, h) {
+		// Fit 2:1 equirectangular map within container, centered
+		const containerRatio = w / h;
+		const mapRatio = 2;
+		let mw, mh;
+		if (containerRatio > mapRatio) {
+			mh = h; mw = h * mapRatio;
+		} else {
+			mw = w; mh = w / mapRatio;
+		}
+		mapRect = { ox: (w - mw) / 2, oy: (h - mh) / 2, mw, mh };
+	}
+
+	function tracePath(ctx, coords, type) {
+		ctx.beginPath();
+		const rings = type === 'Polygon' ? coords : type === 'MultiPolygon' ? coords.flat() : [];
+		for (const ring of rings) {
+			let moved = false;
+			for (let i = 0; i < ring.length; i++) {
+				const x = projectLng(ring[i][0]);
+				const y = projectLat(ring[i][1]);
+				if (i > 0 && Math.abs(ring[i][0] - ring[i-1][0]) > 90) {
+					ctx.moveTo(x, y);
+				} else if (!moved) {
+					ctx.moveTo(x, y); moved = true;
+				} else {
+					ctx.lineTo(x, y);
+				}
 			}
+			ctx.closePath();
 		}
 	}
 
-	function drawRing(ctx, ring, w, h) {
-		ctx.beginPath();
-		let moved = false;
-		for (let i = 0; i < ring.length; i++) {
-			const x = projectLng(ring[i][0], w);
-			const y = projectLat(ring[i][1], h);
-			if (i > 0 && Math.abs(ring[i][0] - ring[i-1][0]) > 90) {
-				ctx.moveTo(x, y);
-			} else if (!moved) {
-				ctx.moveTo(x, y);
-				moved = true;
-			} else {
-				ctx.lineTo(x, y);
-			}
-		}
-		ctx.closePath();
-		ctx.fill();
-		ctx.stroke();
+	function getColor(ratio) {
+		if (ratio <= 0) return null;
+		// Blue ramp: low → dim accent, high → bright accent
+		const r = Math.round(30 + ratio * 78);
+		const g = Math.round(40 + ratio * 102);
+		const b = Math.round(90 + ratio * 149);
+		return `rgb(${r}, ${g}, ${b})`;
 	}
 
 	function draw() {
@@ -59,19 +101,11 @@
 		ctx.fillStyle = '#0d0f17';
 		ctx.fillRect(0, 0, w, h);
 
-		// Draw land from GeoJSON
-		if (worldGeo) {
-			ctx.fillStyle = '#242a48';
-			ctx.strokeStyle = '#333c5c';
-			ctx.lineWidth = 0.5;
-			for (const geom of worldGeo.features || [worldGeo]) {
-				const coords = geom.geometry ? geom.geometry.coordinates : geom.coordinates;
-				const type = geom.geometry ? geom.geometry.type : geom.type;
-				drawGeoShape(ctx, coords, type, w, h);
-			}
-		}
+		if (!worldGeo || !worldGeo.features) return;
 
-		// Aggregate visitors by country
+		calcMapRect(w, h);
+
+		// Aggregate visitors by alpha-2 country code
 		const countryMap = {};
 		let maxReqs = 0;
 		for (const v of visitors) {
@@ -83,58 +117,65 @@
 		}
 		if (maxReqs === 0) maxReqs = 1;
 
-		// Draw visitor heat dots and store positions
-		mapDots = [];
-		for (const cc of Object.keys(countryMap)) {
-			const centroid = countryCentroids[cc];
-			if (!centroid) continue;
-			const [lat, lng] = centroid;
-			const x = projectLng(lng, w);
-			const y = projectLat(lat, h);
-			const ratio = countryMap[cc].count / maxReqs;
-			const radius = 4 + ratio * 18;
-			const alpha = 0.25 + ratio * 0.55;
+		countryHitAreas = [];
+		const baseFill = '#1a1d30';
+		const borderColor = '#2e3145';
+		const activeBorder = '#4a5280';
 
-			mapDots.push({ x, y, radius, country: countryMap[cc].country, code: cc, count: countryMap[cc].count });
+		// Draw each country
+		for (const feat of worldGeo.features) {
+			const numId = String(feat.id);
+			const alpha2 = numToAlpha2[numId];
+			const coords = feat.geometry.coordinates;
+			const type = feat.geometry.type;
+			const data = alpha2 ? countryMap[alpha2] : null;
 
-			// Glow
-			const grad = ctx.createRadialGradient(x, y, 0, x, y, radius * 2.5);
-			grad.addColorStop(0, `rgba(108, 142, 239, ${alpha * 0.5})`);
-			grad.addColorStop(1, 'rgba(108, 142, 239, 0)');
-			ctx.fillStyle = grad;
-			ctx.beginPath();
-			ctx.arc(x, y, radius * 2.5, 0, Math.PI * 2);
+			if (data) {
+				const ratio = Math.pow(data.count / maxReqs, 0.45);
+				ctx.fillStyle = getColor(ratio);
+				ctx.strokeStyle = activeBorder;
+				ctx.lineWidth = 0.8;
+			} else {
+				ctx.fillStyle = baseFill;
+				ctx.strokeStyle = borderColor;
+				ctx.lineWidth = 0.5;
+			}
+
+			tracePath(ctx, coords, type);
 			ctx.fill();
+			ctx.stroke();
 
-			// Core dot
-			ctx.fillStyle = `rgba(108, 142, 239, ${alpha + 0.2})`;
-			ctx.beginPath();
-			ctx.arc(x, y, radius, 0, Math.PI * 2);
-			ctx.fill();
-
-			// Bright center
-			ctx.fillStyle = `rgba(160, 190, 255, ${alpha + 0.3})`;
-			ctx.beginPath();
-			ctx.arc(x, y, Math.max(2, radius * 0.35), 0, Math.PI * 2);
-			ctx.fill();
+			// Store hit area for hover detection
+			if (alpha2) {
+				countryHitAreas.push({ alpha2, coords, type, data });
+			}
 		}
 	}
 
+	function hitTest(mx, my) {
+		if (!canvas) return null;
+		const ctx = canvas.getContext('2d');
+		const dpr = window.devicePixelRatio || 1;
+		for (const area of countryHitAreas) {
+			if (!area.data) continue;
+			tracePath(ctx, area.coords, area.type);
+			if (ctx.isPointInPath(mx * dpr, my * dpr)) return area;
+		}
+		return null;
+	}
+
 	function handleHover(e) {
-		if (!canvas || mapDots.length === 0) return;
+		if (!canvas || countryHitAreas.length === 0) return;
 		const rect = canvas.getBoundingClientRect();
 		const mx = e.clientX - rect.left;
 		const my = e.clientY - rect.top;
-		let hit = null;
-		for (const dot of mapDots) {
-			const dist = Math.sqrt((mx - dot.x) ** 2 + (my - dot.y) ** 2);
-			if (dist < Math.max(dot.radius, 10)) { hit = dot; break; }
-		}
-		if (hit) {
-			const safeCode = esc(hit.code).toLowerCase().replace(/[^a-z]/g, '');
+
+		const hit = hitTest(mx, my);
+		if (hit && hit.data) {
+			const safeCode = esc(hit.alpha2).toLowerCase().replace(/[^a-z]/g, '');
 			const flag = safeCode ? `<img src="https://flagcdn.com/24x18/${safeCode}.png" width="18" height="13" style="vertical-align:middle;margin-right:6px"/>` : '';
-			let html = `<div class="tooltip-row" style="gap:0.375rem">${flag}<span class="tooltip-label" style="min-width:0">${esc(hit.country || hit.code)}</span></div>`;
-			html += `<div class="tooltip-row"><span class="tooltip-dot" style="background:#6C8EEF"></span><span class="tooltip-label">Requests</span><span class="tooltip-val">${formatNumber(hit.count)}</span></div>`;
+			let html = `<div class="tooltip-row" style="gap:0.375rem">${flag}<span class="tooltip-label" style="min-width:0">${esc(hit.data.country || hit.alpha2)}</span></div>`;
+			html += `<div class="tooltip-row"><span class="tooltip-dot" style="background:#6C8EEF"></span><span class="tooltip-label">Requests</span><span class="tooltip-val">${formatNumber(hit.data.count)}</span></div>`;
 			let tx = e.clientX + 14, ty = e.clientY - 10;
 			if (tx + 180 > window.innerWidth - 10) tx = e.clientX - 194;
 			if (ty < 10) ty = 10;
@@ -151,10 +192,16 @@
 		if (canvas) canvas.style.cursor = 'default';
 	}
 
+	onDestroy(() => {
+		if (resizeObserver) resizeObserver.disconnect();
+	});
+
 	function init(node) {
 		canvas = node;
+		resizeObserver = new ResizeObserver(() => { draw(); });
+		resizeObserver.observe(node.parentElement);
 		draw();
-		return { destroy() { canvas = null; } };
+		return { destroy() { if (resizeObserver) resizeObserver.disconnect(); canvas = null; } };
 	}
 
 	$: if (canvas && (visitors || worldGeo)) {

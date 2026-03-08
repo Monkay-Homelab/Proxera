@@ -103,6 +103,8 @@ func SetupRoutes(app *fiber.App) {
 	crowdsec.Get("/whitelist", handlers.CrowdSecListWhitelist)
 	crowdsec.Post("/whitelist", handlers.CrowdSecAddWhitelist)
 	crowdsec.Delete("/whitelist/*", handlers.CrowdSecRemoveWhitelist)
+	crowdsec.Get("/ban-duration", handlers.CrowdSecGetBanDuration)
+	crowdsec.Put("/ban-duration", handlers.CrowdSecSetBanDuration)
 
 	// Admin routes (protected, admin only)
 	admin := api.Group("/admin")
@@ -175,8 +177,8 @@ func SetupRoutes(app *fiber.App) {
 	dns.Post("/providers", handlers.AddDNSProvider)
 	dns.Get("/providers", handlers.ListDNSProviders)
 	dns.Delete("/providers/:id", handlers.DeleteDNSProvider)
-	dns.Post("/export", handlers.ExportDNSProviders)
-	dns.Post("/import", handlers.ImportDNSProviders)
+	dns.Post("/export", handlers.ExportBackup)
+	dns.Post("/import", handlers.ImportBackup)
 	dns.Get("/providers/:id/records", handlers.ListDNSRecords)
 	dns.Post("/providers/:id/records", handlers.CreateDNSRecord)
 	dns.Patch("/providers/:id/records/:recordId", handlers.UpdateDNSRecord)
@@ -203,6 +205,7 @@ func SetupRoutes(app *fiber.App) {
 		},
 	}), handlers.IssueCertificate)
 	certs.Get("/:id", handlers.GetCertificate)
+	certs.Post("/:id/retry", handlers.RetryCertificate)
 	certs.Delete("/:id", handlers.DeleteCertificate)
 
 	// Agent update routes (public)

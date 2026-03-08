@@ -38,6 +38,7 @@
 	let ruleConfigBaselineMinutes = $state(60);
 	let ruleConfigBandwidthGB = $state(10);
 	let ruleConfigPeriodHours = $state(1);
+	let ruleConfigMinEvents = $state(1);
 	let ruleSaving = $state(false);
 
 	// Channel form
@@ -121,6 +122,7 @@
 		ruleConfigBaselineMinutes = 60;
 		ruleConfigBandwidthGB = 10;
 		ruleConfigPeriodHours = 1;
+		ruleConfigMinEvents = 1;
 		showRuleModal = true;
 	}
 
@@ -155,6 +157,9 @@
 			ruleConfigBandwidthGB = cfg.threshold_gb || 10;
 			ruleConfigPeriodHours = cfg.period_hours || 1;
 			ruleConfigDomains = cfg.domains?.[0] === 'all' ? 'all' : (cfg.domains || []).join(', ');
+		} else if (rule.alert_type === 'crowdsec_ban') {
+			ruleConfigAgentIds = cfg.agent_ids?.[0] === 'all' ? 'all' : (cfg.agent_ids || []).join(', ');
+			ruleConfigMinEvents = cfg.min_events || 1;
 		}
 		showRuleModal = true;
 	}
@@ -195,6 +200,11 @@
 					threshold_gb: ruleConfigBandwidthGB,
 					period_hours: ruleConfigPeriodHours,
 					domains: ruleConfigDomains === 'all' ? ['all'] : ruleConfigDomains.split(',').map(s => s.trim()).filter(Boolean),
+				};
+			case 'crowdsec_ban':
+				return {
+					agent_ids: ruleConfigAgentIds === 'all' ? ['all'] : ruleConfigAgentIds.split(',').map(s => s.trim()).filter(Boolean),
+					min_events: ruleConfigMinEvents,
 				};
 			default:
 				return {};
@@ -380,6 +390,7 @@
 			case 'traffic_spike': return 'Traffic Spike';
 			case 'host_down': return 'Host Down';
 			case 'bandwidth_threshold': return 'Bandwidth';
+			case 'crowdsec_ban': return 'CrowdSec Ban';
 			default: return type;
 		}
 	}
@@ -423,7 +434,7 @@
 		<h1>Alerts</h1>
 		{#if tab === 'rules'}
 			<div class="head-actions">
-				{#if rules.length > 0 && rules.length < 8}
+				{#if rules.length > 0 && rules.length < 9}
 					<button class="btn-ghost" onclick={quickSetup}>Enable All Rules</button>
 				{/if}
 				<button class="btn-fill" onclick={openCreateRule}>
@@ -582,6 +593,7 @@
 					<option value="traffic_spike">Traffic Spike</option>
 					<option value="host_down">Host Down</option>
 					<option value="bandwidth_threshold">Bandwidth</option>
+					<option value="crowdsec_ban">CrowdSec Ban</option>
 				</select>
 				<select class="input filter-select" bind:value={filterSeverity} onchange={() => { historyOffset = 0; loadHistory(); }}>
 					<option value="">All Severities</option>
@@ -668,6 +680,7 @@
 						<option value="traffic_spike">Traffic Spike</option>
 						<option value="host_down">Host Down</option>
 						<option value="bandwidth_threshold">Bandwidth Threshold</option>
+						<option value="crowdsec_ban">CrowdSec Ban</option>
 					</select>
 				</div>
 			{/if}
@@ -760,6 +773,17 @@
 				<div class="form-group">
 					<label for="rule-domains-bw">Domains</label>
 					<input id="rule-domains-bw" class="input" type="text" bind:value={ruleConfigDomains} placeholder='"all" or comma-separated domains' />
+				</div>
+			{:else if ruleType === 'crowdsec_ban'}
+				<div class="form-group">
+					<label for="rule-cs-agents">Agent IDs</label>
+					<input id="rule-cs-agents" class="input" type="text" bind:value={ruleConfigAgentIds} placeholder='"all" or comma-separated agent IDs' />
+					<span class="form-hint">Use "all" to monitor every agent with CrowdSec, or list specific agent IDs.</span>
+				</div>
+				<div class="form-group">
+					<label for="rule-cs-min-events">Minimum Events</label>
+					<input id="rule-cs-min-events" class="input" type="number" min="1" bind:value={ruleConfigMinEvents} />
+					<span class="form-hint">Only alert when a ban has at least this many events. Critical if 10+.</span>
 				</div>
 			{/if}
 

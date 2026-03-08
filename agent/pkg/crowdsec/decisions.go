@@ -26,7 +26,20 @@ type alertWithDecisions struct {
 
 // ListDecisions returns active local decisions (from local detection)
 func (m *Manager) ListDecisions() ([]Decision, error) {
-	output, err := m.runCscliCmd("decisions", "list", "-o", "json")
+	return m.listDecisions(false)
+}
+
+// ListAllDecisions returns all active decisions including CAPI community blocklist
+func (m *Manager) ListAllDecisions() ([]Decision, error) {
+	return m.listDecisions(true)
+}
+
+func (m *Manager) listDecisions(includeAll bool) ([]Decision, error) {
+	args := []string{"decisions", "list", "-o", "json"}
+	if includeAll {
+		args = append(args, "--all")
+	}
+	output, err := m.runCscliCmd(args...)
 	if err != nil {
 		// cscli returns error when no decisions exist
 		return []Decision{}, nil

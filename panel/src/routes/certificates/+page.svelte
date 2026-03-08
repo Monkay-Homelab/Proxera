@@ -1,7 +1,7 @@
 <script>
-	import { onMount } from 'svelte';
+	import { onMount, onDestroy } from 'svelte';
 	import { api } from '$lib/api';
-	import { toastError } from '$lib/components/toast';
+	import { toastError, toastSuccess } from '$lib/components/toast';
 	import { confirmDialog } from '$lib/components/confirm';
 	import { formatDate, copyToClipboard } from '$lib/utils';
 
@@ -11,9 +11,9 @@
 	let showIssueModal = false;
 	let showViewModal = false;
 	let viewCert = null;
-	let issuing = false;
 	let error = '';
 	let privateKeyRevealed = false;
+	let pollTimer = null;
 
 	// Issue form
 	let selectedProviderId = '';
@@ -31,6 +31,9 @@
 			const response = await api('/api/certificates');
 			if (response.ok) {
 				certificates = (await response.json()).sort((a, b) => (a.domain || '').localeCompare(b.domain || ''));
+				if (certificates.some(c => c.status === 'pending')) {
+					startPolling();
+				}
 			}
 		} catch (err) {
 			toastError('Failed to fetch certificates');
@@ -67,6 +70,42 @@
 		showIssueModal = false;
 	}
 
+	function startPolling() {
+		stopPolling();
+		pollTimer = setInterval(async () => {
+			const hasPending = certificates.some(c => c.status === 'pending');
+			if (!hasPending) {
+				stopPolling();
+				return;
+			}
+			try {
+				const response = await api('/api/certificates');
+				if (response.ok) {
+					const updated = (await response.json()).sort((a, b) => (a.domain || '').localeCompare(b.domain || ''));
+					// Check for status changes to notify user
+					for (const cert of updated) {
+						const old = certificates.find(c => c.id === cert.id);
+						if (old && old.status === 'pending' && cert.status === 'active') {
+							toastSuccess(`Certificate for ${cert.domain} issued successfully`);
+						} else if (old && old.status === 'pending' && cert.status === 'error') {
+							toastError(`Certificate for ${cert.domain} failed`);
+						}
+					}
+					certificates = updated;
+				}
+			} catch {}
+		}, 5000);
+	}
+
+	function stopPolling() {
+		if (pollTimer) {
+			clearInterval(pollTimer);
+			pollTimer = null;
+		}
+	}
+
+	onDestroy(() => stopPolling());
+
 	async function handleIssue() {
 		const provider = getSelectedProvider();
 		if (!provider || !selectedProviderId) return;
@@ -92,7 +131,6 @@
 			}
 		}
 
-		issuing = true;
 		error = '';
 
 		try {
@@ -107,15 +145,32 @@
 
 			if (!response.ok) {
 				const data = await response.json();
-				throw new Error(data.message || 'Failed to issue certificate');
+				throw new Error(data.message || data.error || 'Failed to issue certificate');
 			}
 
-			await fetchCertificates();
+			const pendingCert = await response.json();
+			certificates = [...certificates, pendingCert].sort((a, b) => (a.domain || '').localeCompare(b.domain || ''));
 			closeIssueModal();
+			startPolling();
 		} catch (err) {
 			error = err.message;
-		} finally {
-			issuing = false;
+		}
+	}
+
+	async function retryCertificate(certId) {
+		try {
+			const response = await api(`/api/certificates/${certId}/retry`, { method: 'POST' });
+			if (!response.ok) {
+				const data = await response.json();
+				throw new Error(data.error || 'Retry failed');
+			}
+			// Update local state to pending
+			certificates = certificates.map(c =>
+				c.id === certId ? { ...c, status: 'pending' } : c
+			);
+			startPolling();
+		} catch (err) {
+			toastError(err.message);
 		}
 	}
 
@@ -204,7 +259,7 @@
 				</thead>
 				<tbody>
 					{#each certificates as cert}
-						<tr>
+						<tr class:pending-row={cert.status === 'pending'}>
 							<td class="domain-cell">
 								{cert.domain}
 								{#if cert.san}
@@ -212,17 +267,35 @@
 								{/if}
 							</td>
 							<td>
-								<span class="status-badge {statusClass(cert.status)}">{cert.status}</span>
+								{#if cert.status === 'pending'}
+									<span class="status-badge badge-warn pending-badge">
+										<span class="spinner"></span>
+										issuing
+									</span>
+								{:else}
+									<span class="status-badge {statusClass(cert.status)}">{cert.status}</span>
+								{/if}
 							</td>
-							<td class="dim">{formatDate(cert.issued_at)}</td>
-							<td class="dim">{formatDate(cert.expires_at)}</td>
+							<td class="dim">{cert.status === 'pending' ? '—' : formatDate(cert.issued_at)}</td>
+							<td class="dim">{cert.status === 'pending' ? '—' : formatDate(cert.expires_at)}</td>
 							<td class="td-actions">
-								<button class="act act-accent" onclick={() => viewCertificate(cert)} title="View" aria-label="View certificate">
-									<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
-								</button>
-								<button class="act act-danger" onclick={() => deleteCertificate(cert.id)} title="Delete" aria-label="Delete certificate">
-									<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-								</button>
+								{#if cert.status === 'pending'}
+									<!-- no actions while issuing -->
+								{:else if cert.status === 'error'}
+									<button class="act act-warn" onclick={() => retryCertificate(cert.id)} title="Retry" aria-label="Retry certificate">
+										<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+									</button>
+									<button class="act act-danger" onclick={() => deleteCertificate(cert.id)} title="Delete" aria-label="Delete certificate">
+										<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+									</button>
+								{:else}
+									<button class="act act-accent" onclick={() => viewCertificate(cert)} title="View" aria-label="View certificate">
+										<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+									</button>
+									<button class="act act-danger" onclick={() => deleteCertificate(cert.id)} title="Delete" aria-label="Delete certificate">
+										<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+									</button>
+								{/if}
 							</td>
 						</tr>
 					{/each}
@@ -317,15 +390,11 @@
 				<button
 					class="btn-fill"
 					onclick={handleIssue}
-					disabled={!selectedProviderId || issuing}
+					disabled={!selectedProviderId}
 				>
-					{issuing ? 'Issuing...' : 'Issue Certificate'}
+					Issue Certificate
 				</button>
 			</div>
-
-			{#if issuing}
-				<p class="issuing-hint">This may take 30-120 seconds while the DNS challenge is verified...</p>
-			{/if}
 		</div>
 	</div>
 {/if}
@@ -433,6 +502,8 @@
 
 	/* ── Actions ── */
 	.td-actions { text-align: right; white-space: nowrap; }
+	.act-warn { color: var(--warning); }
+	.act-warn:hover { background: var(--warning-dim); }
 
 	/* ── Modal ── */
 	.modal-wide { max-width: 900px; }
@@ -489,9 +560,28 @@
 		color: var(--accent); padding: 0.125rem 0;
 	}
 
-	.issuing-hint {
-		text-align: center; color: var(--text-tertiary);
-		font-size: var(--text-xs); margin-top: 0.75rem;
+	/* ── Pending row ── */
+	.pending-row {
+		opacity: 0.7;
+	}
+
+	.pending-badge {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.375rem;
+	}
+
+	.spinner {
+		width: 10px;
+		height: 10px;
+		border: 2px solid var(--warning);
+		border-top-color: transparent;
+		border-radius: 50%;
+		animation: spin 0.8s linear infinite;
+	}
+
+	@keyframes spin {
+		to { transform: rotate(360deg); }
 	}
 
 	/* ── View modal ── */

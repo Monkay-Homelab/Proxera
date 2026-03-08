@@ -20,7 +20,7 @@ import (
 
 // --- Export types ---
 
-type dnsExportProvider struct {
+type exportProvider struct {
 	Provider  string `json:"provider"`
 	Domain    string `json:"domain"`
 	ZoneID    string `json:"zone_id"`
@@ -28,13 +28,37 @@ type dnsExportProvider struct {
 	APISecret string `json:"api_secret,omitempty"`
 }
 
-type dnsExportPayload struct {
-	Version   int                 `json:"version"`
-	ExportedAt string            `json:"exported_at"`
-	Providers []dnsExportProvider `json:"providers"`
+type exportHost struct {
+	Domain        string              `json:"domain"`
+	ProviderDomain string            `json:"provider_domain"`
+	UpstreamURL   string              `json:"upstream_url"`
+	SSL           bool                `json:"ssl"`
+	WebSocket     bool                `json:"websocket"`
+	Config        *HostAdvancedConfig `json:"config,omitempty"`
 }
 
-type dnsExportFile struct {
+type exportCertificate struct {
+	Domain         string  `json:"domain"`
+	SAN            string  `json:"san,omitempty"`
+	ProviderDomain string  `json:"provider_domain"`
+	CertificatePEM string  `json:"certificate_pem"`
+	PrivateKeyPEM  string  `json:"private_key_pem"`
+	IssuerPEM      string  `json:"issuer_pem,omitempty"`
+	CertURL        string  `json:"cert_url,omitempty"`
+	ChallengeType  string  `json:"challenge_type"`
+	IssuedAt       *string `json:"issued_at,omitempty"`
+	ExpiresAt      *string `json:"expires_at,omitempty"`
+}
+
+type exportPayload struct {
+	Version      int                 `json:"version"`
+	ExportedAt   string              `json:"exported_at"`
+	Providers    []exportProvider    `json:"providers"`
+	Hosts        []exportHost        `json:"hosts,omitempty"`
+	Certificates []exportCertificate `json:"certificates,omitempty"`
+}
+
+type exportFile struct {
 	Version    int    `json:"version"`
 	Salt       string `json:"salt"`
 	Ciphertext string `json:"ciphertext"`
@@ -101,8 +125,8 @@ func decryptWithPassword(ciphertext []byte, password string, salt []byte) ([]byt
 	return plaintext, nil
 }
 
-// ExportDNSProviders handles POST /api/dns/export
-func ExportDNSProviders(c *fiber.Ctx) error {
+// ExportBackup handles POST /api/dns/export
+func ExportBackup(c *fiber.Ctx) error {
 	userID, _ := c.Locals("user_id").(int)
 	role, _ := c.Locals("user_role").(string)
 
@@ -116,36 +140,39 @@ func ExportDNSProviders(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Password must be at least 8 characters"})
 	}
 
-	// Fetch all accessible providers with encrypted credentials
-	var query string
-	var args []interface{}
+	// --- Fetch providers ---
+	var providerQuery string
+	var providerArgs []interface{}
 	if role == "admin" {
-		query = `SELECT provider, domain, zone_id, api_key, api_secret FROM dns_providers ORDER BY id`
+		providerQuery = `SELECT id, provider, domain, zone_id, api_key, api_secret FROM dns_providers ORDER BY id`
 	} else {
-		query = `SELECT provider, domain, zone_id, api_key, api_secret FROM dns_providers
+		providerQuery = `SELECT id, provider, domain, zone_id, api_key, api_secret FROM dns_providers
 			WHERE user_id = $1 OR id IN (SELECT dns_provider_id FROM user_dns_providers WHERE user_id = $1)
 			ORDER BY id`
-		args = append(args, userID)
+		providerArgs = append(providerArgs, userID)
 	}
 
-	rows, err := database.DB.Query(context.Background(), query, args...)
+	rows, err := database.DB.Query(context.Background(), providerQuery, providerArgs...)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to fetch providers"})
 	}
 	defer rows.Close()
 
-	var providers []dnsExportProvider
+	var providers []exportProvider
+	providerIDToDomain := map[int]string{} // map provider DB id → domain for host/cert linking
 	for rows.Next() {
+		var id int
 		var provider, encZoneID, encAPIKey string
 		var domain, encAPISecret *string
 
-		if err := rows.Scan(&provider, &domain, &encZoneID, &encAPIKey, &encAPISecret); err != nil {
+		if err := rows.Scan(&id, &provider, &domain, &encZoneID, &encAPIKey, &encAPISecret); err != nil {
 			continue
 		}
 
-		ep := dnsExportProvider{Provider: provider}
+		ep := exportProvider{Provider: provider}
 		if domain != nil {
 			ep.Domain = *domain
+			providerIDToDomain[id] = *domain
 		}
 		if v, err := crypto.Decrypt(encZoneID); err == nil {
 			ep.ZoneID = v
@@ -163,14 +190,114 @@ func ExportDNSProviders(c *fiber.Ctx) error {
 	}
 
 	if len(providers) == 0 {
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "No DNS providers to export"})
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "No data to export"})
+	}
+
+	// --- Fetch hosts ---
+	var hostQuery string
+	var hostArgs []interface{}
+	if role == "admin" {
+		hostQuery = `SELECT h.domain, h.upstream_url, h.ssl, h.websocket, h.config, h.provider_id
+			FROM hosts h ORDER BY h.id`
+	} else {
+		hostQuery = `SELECT h.domain, h.upstream_url, h.ssl, h.websocket, h.config, h.provider_id
+			FROM hosts h WHERE h.user_id = $1 ORDER BY h.id`
+		hostArgs = append(hostArgs, userID)
+	}
+
+	hostRows, err := database.DB.Query(context.Background(), hostQuery, hostArgs...)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to fetch hosts"})
+	}
+	defer hostRows.Close()
+
+	var hosts []exportHost
+	for hostRows.Next() {
+		var domain, upstreamURL string
+		var ssl, websocket bool
+		var configBytes []byte
+		var providerID int
+
+		if err := hostRows.Scan(&domain, &upstreamURL, &ssl, &websocket, &configBytes, &providerID); err != nil {
+			continue
+		}
+
+		eh := exportHost{
+			Domain:         domain,
+			ProviderDomain: providerIDToDomain[providerID],
+			UpstreamURL:    upstreamURL,
+			SSL:            ssl,
+			WebSocket:      websocket,
+			Config:         scanHostConfig(configBytes),
+		}
+		hosts = append(hosts, eh)
+	}
+
+	// --- Fetch certificates ---
+	var certQuery string
+	var certArgs []interface{}
+	if role == "admin" {
+		certQuery = `SELECT c.domain, COALESCE(c.san, ''), c.certificate_pem, c.private_key_pem, COALESCE(c.issuer_pem, ''),
+			COALESCE(c.cert_url, ''), c.challenge_type, c.issued_at, c.expires_at, c.provider_id
+			FROM certificates c WHERE c.status = 'active' ORDER BY c.id`
+	} else {
+		certQuery = `SELECT c.domain, COALESCE(c.san, ''), c.certificate_pem, c.private_key_pem, COALESCE(c.issuer_pem, ''),
+			COALESCE(c.cert_url, ''), c.challenge_type, c.issued_at, c.expires_at, c.provider_id
+			FROM certificates c WHERE c.user_id = $1 AND c.status = 'active' ORDER BY c.id`
+		certArgs = append(certArgs, userID)
+	}
+
+	certRows, err := database.DB.Query(context.Background(), certQuery, certArgs...)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to fetch certificates"})
+	}
+	defer certRows.Close()
+
+	var certs []exportCertificate
+	for certRows.Next() {
+		var domain, san, certPEM, encPrivateKey, issuerPEM, certURL, challengeType string
+		var issuedAt, expiresAt *time.Time
+		var providerID int
+
+		if err := certRows.Scan(&domain, &san, &certPEM, &encPrivateKey, &issuerPEM,
+			&certURL, &challengeType, &issuedAt, &expiresAt, &providerID); err != nil {
+			continue
+		}
+
+		// Decrypt private key
+		privateKey, err := crypto.Decrypt(encPrivateKey)
+		if err != nil {
+			continue
+		}
+
+		ec := exportCertificate{
+			Domain:         domain,
+			SAN:            san,
+			ProviderDomain: providerIDToDomain[providerID],
+			CertificatePEM: certPEM,
+			PrivateKeyPEM:  privateKey,
+			IssuerPEM:      issuerPEM,
+			CertURL:        certURL,
+			ChallengeType:  challengeType,
+		}
+		if issuedAt != nil {
+			s := issuedAt.UTC().Format(time.RFC3339)
+			ec.IssuedAt = &s
+		}
+		if expiresAt != nil {
+			s := expiresAt.UTC().Format(time.RFC3339)
+			ec.ExpiresAt = &s
+		}
+		certs = append(certs, ec)
 	}
 
 	// Build plaintext payload
-	payload := dnsExportPayload{
-		Version:    1,
-		ExportedAt: time.Now().UTC().Format(time.RFC3339),
-		Providers:  providers,
+	payload := exportPayload{
+		Version:      2,
+		ExportedAt:   time.Now().UTC().Format(time.RFC3339),
+		Providers:    providers,
+		Hosts:        hosts,
+		Certificates: certs,
 	}
 	plaintext, err := json.Marshal(payload)
 	if err != nil {
@@ -186,8 +313,8 @@ func ExportDNSProviders(c *fiber.Ctx) error {
 	// Checksum of ciphertext for integrity verification
 	hash := sha256.Sum256(ct)
 
-	export := dnsExportFile{
-		Version:    1,
+	export := exportFile{
+		Version:    2,
 		Salt:       hex.EncodeToString(salt),
 		Ciphertext: hex.EncodeToString(ct),
 		Checksum:   hex.EncodeToString(hash[:]),
@@ -196,13 +323,13 @@ func ExportDNSProviders(c *fiber.Ctx) error {
 	return c.JSON(export)
 }
 
-// ImportDNSProviders handles POST /api/dns/import
-func ImportDNSProviders(c *fiber.Ctx) error {
+// ImportBackup handles POST /api/dns/import
+func ImportBackup(c *fiber.Ctx) error {
 	userID, _ := c.Locals("user_id").(int)
 
 	var body struct {
-		Password string        `json:"password"`
-		Backup   dnsExportFile `json:"backup"`
+		Password string     `json:"password"`
+		Backup   exportFile `json:"backup"`
 	}
 	if err := c.BodyParser(&body); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid request body"})
@@ -236,7 +363,8 @@ func ImportDNSProviders(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	var payload dnsExportPayload
+	// Support both v1 (providers-only) and v2 (full backup)
+	var payload exportPayload
 	if err := json.Unmarshal(plaintext, &payload); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid backup data"})
 	}
@@ -245,18 +373,24 @@ func ImportDNSProviders(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Backup contains no providers"})
 	}
 
-	// Import each provider — skip duplicates (same provider + domain)
-	imported := 0
-	skipped := 0
+	result := fiber.Map{}
+
+	// --- Import providers ---
+	providersImported := 0
+	providersSkipped := 0
+	// Track provider domain → new DB id for host/cert linking
+	providerDomainToID := map[string]int{}
+
 	for _, p := range payload.Providers {
 		// Check for existing provider with same provider type and domain
-		var exists bool
+		var existingID int
 		err := database.DB.QueryRow(context.Background(),
-			`SELECT EXISTS(SELECT 1 FROM dns_providers WHERE provider = $1 AND domain = $2)`,
+			`SELECT id FROM dns_providers WHERE provider = $1 AND domain = $2`,
 			p.Provider, p.Domain,
-		).Scan(&exists)
-		if err == nil && exists {
-			skipped++
+		).Scan(&existingID)
+		if err == nil {
+			providerDomainToID[p.Domain] = existingID
+			providersSkipped++
 			continue
 		}
 
@@ -279,20 +413,118 @@ func ImportDNSProviders(c *fiber.Ctx) error {
 			encAPISecret = &v
 		}
 
-		_, err = database.DB.Exec(context.Background(),
+		var newID int
+		err = database.DB.QueryRow(context.Background(),
 			`INSERT INTO dns_providers (user_id, provider, zone_id, api_key, api_secret, domain, created_at, updated_at)
-			 VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())`,
+			 VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW()) RETURNING id`,
 			userID, p.Provider, encZoneID, encAPIKey, encAPISecret, p.Domain,
-		)
+		).Scan(&newID)
 		if err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": fmt.Sprintf("Failed to import provider %s: %v", p.Domain, err)})
 		}
-		imported++
+		providerDomainToID[p.Domain] = newID
+		providersImported++
 	}
+	result["providers_imported"] = providersImported
+	result["providers_skipped"] = providersSkipped
 
-	return c.JSON(fiber.Map{
-		"message":  fmt.Sprintf("Imported %d provider(s)", imported),
-		"imported": imported,
-		"skipped":  skipped,
-	})
+	// --- Import hosts ---
+	hostsImported := 0
+	hostsSkipped := 0
+	for _, h := range payload.Hosts {
+		providerID, ok := providerDomainToID[h.ProviderDomain]
+		if !ok {
+			hostsSkipped++
+			continue
+		}
+
+		// Skip duplicate hosts (same domain under same provider)
+		var exists bool
+		err := database.DB.QueryRow(context.Background(),
+			`SELECT EXISTS(SELECT 1 FROM hosts WHERE domain = $1 AND provider_id = $2)`,
+			h.Domain, providerID,
+		).Scan(&exists)
+		if err == nil && exists {
+			hostsSkipped++
+			continue
+		}
+
+		configJSON, _ := json.Marshal(h.Config)
+		if h.Config == nil {
+			configJSON = []byte("{}")
+		}
+
+		_, err = database.DB.Exec(context.Background(),
+			`INSERT INTO hosts (user_id, provider_id, domain, upstream_url, ssl, websocket, config, created_at, updated_at)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())`,
+			userID, providerID, h.Domain, h.UpstreamURL, h.SSL, h.WebSocket, configJSON,
+		)
+		if err != nil {
+			hostsSkipped++
+			continue
+		}
+		hostsImported++
+	}
+	result["hosts_imported"] = hostsImported
+	result["hosts_skipped"] = hostsSkipped
+
+	// --- Import certificates ---
+	certsImported := 0
+	certsSkipped := 0
+	for _, cert := range payload.Certificates {
+		providerID, ok := providerDomainToID[cert.ProviderDomain]
+		if !ok {
+			certsSkipped++
+			continue
+		}
+
+		// Skip duplicate certs (same domain under same provider)
+		var exists bool
+		err := database.DB.QueryRow(context.Background(),
+			`SELECT EXISTS(SELECT 1 FROM certificates WHERE domain = $1 AND provider_id = $2 AND status = 'active')`,
+			cert.Domain, providerID,
+		).Scan(&exists)
+		if err == nil && exists {
+			certsSkipped++
+			continue
+		}
+
+		// Re-encrypt private key with system key
+		encPrivateKey, err := crypto.Encrypt(cert.PrivateKeyPEM)
+		if err != nil {
+			certsSkipped++
+			continue
+		}
+
+		var issuedAt, expiresAt *time.Time
+		if cert.IssuedAt != nil {
+			if t, err := time.Parse(time.RFC3339, *cert.IssuedAt); err == nil {
+				issuedAt = &t
+			}
+		}
+		if cert.ExpiresAt != nil {
+			if t, err := time.Parse(time.RFC3339, *cert.ExpiresAt); err == nil {
+				expiresAt = &t
+			}
+		}
+
+		_, err = database.DB.Exec(context.Background(),
+			`INSERT INTO certificates (user_id, provider_id, domain, san, certificate_pem, private_key_pem, issuer_pem, cert_url, status, challenge_type, issued_at, expires_at, created_at, updated_at)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'active', $9, $10, $11, NOW(), NOW())`,
+			userID, providerID, cert.Domain, cert.SAN, cert.CertificatePEM, encPrivateKey,
+			cert.IssuerPEM, cert.CertURL, cert.ChallengeType, issuedAt, expiresAt,
+		)
+		if err != nil {
+			certsSkipped++
+			continue
+		}
+		certsImported++
+	}
+	result["certs_imported"] = certsImported
+	result["certs_skipped"] = certsSkipped
+
+	total := providersImported + hostsImported + certsImported
+	result["message"] = fmt.Sprintf("Imported %d item(s)", total)
+
+	return c.JSON(result)
 }

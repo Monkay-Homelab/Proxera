@@ -271,6 +271,48 @@ Consider enabling caching, optimizing assets, or upgrading your plan.`,
 	}
 }
 
+// BuildCrowdSecBanAlert creates an alert payload for CrowdSec IP bans.
+func BuildCrowdSecBanAlert(ip, country, asName, agentName, agentID, scenario string, eventsCount int) models.AlertPayload {
+	severity := "warning"
+	if eventsCount >= 10 {
+		severity = "critical"
+	}
+
+	countryInfo := ""
+	if country != "" {
+		countryInfo = fmt.Sprintf("\nCountry: %s", country)
+	}
+	asInfo := ""
+	if asName != "" {
+		asInfo = fmt.Sprintf("\nAS Name: %s", asName)
+	}
+
+	message := fmt.Sprintf(`CrowdSec banned IP %s on agent "%s".
+
+Scenario: %s
+Events: %d%s%s
+Agent: %s
+
+This IP was automatically blocked by CrowdSec based on detected malicious behavior.`,
+		ip, agentName, scenario, eventsCount, countryInfo, asInfo, agentName,
+	)
+
+	return models.AlertPayload{
+		AlertType: "crowdsec_ban",
+		Severity:  severity,
+		Title:     fmt.Sprintf("CrowdSec banned %s on %s", ip, agentName),
+		Message:   message,
+		Metadata: map[string]any{
+			"ip":           ip,
+			"agent_id":     agentID,
+			"agent_name":   agentName,
+			"scenario":     scenario,
+			"events_count": eventsCount,
+			"country":      country,
+		},
+	}
+}
+
 // BuildErrorRateAlert creates an alert payload for high server error (5xx) rates.
 func BuildErrorRateAlert(domain string, errorRate, threshold float64, windowMinutes int, serverErrors, totalRequests int64) models.AlertPayload {
 	severity := "warning"

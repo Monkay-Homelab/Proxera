@@ -31,6 +31,7 @@ func StartAlertWorker() {
 func runAlertChecks() {
 	checkStaleAgents()
 	checkCertExpiryAlerts()
+	checkCrowdSecBans()
 }
 
 // checkStaleAgents detects agents that went offline without a clean disconnect.
@@ -546,6 +547,146 @@ func evaluateBandwidthAlerts(agentID string, userID int, buckets []models.Incomi
 				notifications.Resolve(ctx, userID, "bandwidth_threshold", "domain", domain)
 			}
 		}
+	}
+}
+
+// checkCrowdSecBans queries agents for recent CrowdSec bans and triggers alerts.
+func checkCrowdSecBans() {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	// Get all agents with CrowdSec installed
+	rows, err := database.DB.Query(ctx, `
+		SELECT agent_id, user_id, name FROM agents WHERE crowdsec_installed = true
+	`)
+	if err != nil {
+		log.Printf("[AlertWorker] Failed to query CrowdSec agents: %v", err)
+		return
+	}
+	defer rows.Close()
+
+	type agentInfo struct {
+		ID     string
+		UserID int
+		Name   string
+	}
+	var agents []agentInfo
+	for rows.Next() {
+		var a agentInfo
+		if err := rows.Scan(&a.ID, &a.UserID, &a.Name); err == nil {
+			agents = append(agents, a)
+		}
+	}
+
+	if len(agents) == 0 {
+		return
+	}
+
+	for _, agent := range agents {
+		var alerts []CrowdSecAlert
+
+		if IsLocalAgent(agent.ID) {
+			result, err := localAgent.CrowdSecListAlerts()
+			if err != nil {
+				continue
+			}
+			alertJSON, err := json.Marshal(result)
+			if err != nil {
+				continue
+			}
+			if err := json.Unmarshal(alertJSON, &alerts); err != nil {
+				continue
+			}
+		} else {
+			command := models.AgentCommand{
+				Type:    "crowdsec_alerts_list",
+				Payload: map[string]interface{}{},
+			}
+			response, err := SendCommandAndWaitForResponse(agent.ID, command, CmdTimeoutFast)
+			if err != nil {
+				continue
+			}
+			if err := json.Unmarshal([]byte(response), &alerts); err != nil {
+				continue
+			}
+		}
+
+		// Filter to alerts created in the last 5 minutes (the check interval)
+		cutoff := time.Now().Add(-5 * time.Minute)
+		for _, csAlert := range alerts {
+			createdAt, err := time.Parse(time.RFC3339, csAlert.CreatedAt)
+			if err != nil {
+				// Try alternate format
+				createdAt, err = time.Parse("2006-01-02T15:04:05Z", csAlert.CreatedAt)
+				if err != nil {
+					continue
+				}
+			}
+			if createdAt.Before(cutoff) {
+				continue
+			}
+			if csAlert.Source.IP == "" {
+				continue
+			}
+
+			triggerCrowdSecBanAlert(agent.ID, agent.UserID, agent.Name, csAlert)
+		}
+	}
+}
+
+// triggerCrowdSecBanAlert checks user's alert rules and dispatches CrowdSec ban alerts.
+func triggerCrowdSecBanAlert(agentID string, userID int, agentName string, csAlert CrowdSecAlert) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	rows, err := database.DB.Query(ctx, `
+		SELECT id, config, cooldown_minutes
+		FROM alert_rules
+		WHERE user_id = $1 AND alert_type = 'crowdsec_ban' AND enabled = true
+	`, userID)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var ruleID, cooldownMinutes int
+		var configRaw json.RawMessage
+		if err := rows.Scan(&ruleID, &configRaw, &cooldownMinutes); err != nil {
+			continue
+		}
+
+		var config struct {
+			AgentIDs  []string `json:"agent_ids"`
+			MinEvents int      `json:"min_events"`
+		}
+		json.Unmarshal(configRaw, &config)
+		if config.MinEvents <= 0 {
+			config.MinEvents = 1
+		}
+
+		// Check agent filter
+		matched := false
+		for _, id := range config.AgentIDs {
+			if id == "all" || id == agentID {
+				matched = true
+				break
+			}
+		}
+		if !matched && len(config.AgentIDs) > 0 {
+			continue
+		}
+
+		// Check minimum events threshold
+		if csAlert.EventsCount < config.MinEvents {
+			continue
+		}
+
+		alert := email.BuildCrowdSecBanAlert(
+			csAlert.Source.IP, csAlert.Source.Country, csAlert.Source.ASName,
+			agentName, agentID, csAlert.Scenario, csAlert.EventsCount,
+		)
+		notifications.Dispatch(ctx, userID, ruleID, cooldownMinutes, alert)
 	}
 }
 
