@@ -65,7 +65,12 @@
 
 			setToken(data.token);
 			setUserRole(data.user?.role || '');
-			goto('/home');
+
+			if (data.setup_required) {
+				goto('/setup');
+			} else {
+				goto('/home');
+			}
 		} catch (err) {
 			error = err instanceof Error ? err.message : 'An error occurred';
 		} finally {
