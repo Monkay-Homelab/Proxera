@@ -4,9 +4,11 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"log"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -15,12 +17,19 @@ import (
 )
 
 // jwtSecret is lazily cached to ensure it's read after godotenv.Load() in main().
-var jwtSecret []byte
+var (
+	jwtSecret     []byte
+	jwtSecretOnce sync.Once
+)
 
 func getJWTSecret() []byte {
-	if jwtSecret == nil {
-		jwtSecret = []byte(os.Getenv("JWT_SECRET"))
-	}
+	jwtSecretOnce.Do(func() {
+		secret := os.Getenv("JWT_SECRET")
+		if secret == "" {
+			log.Fatal("JWT_SECRET environment variable is not set")
+		}
+		jwtSecret = []byte(secret)
+	})
 	return jwtSecret
 }
 
@@ -57,7 +66,9 @@ func Auth(c *fiber.Ctx) error {
 			"SELECT COALESCE(role, 'member'), COALESCE(suspended, false) FROM users WHERE id = $1", userID,
 		).Scan(&role, &suspended)
 		if err != nil {
-			role = "member"
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+				"error": "Failed to verify user account",
+			})
 		}
 		if suspended {
 			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
@@ -110,20 +121,36 @@ func Auth(c *fiber.Ctx) error {
 	// Store user ID in context for handlers
 	c.Locals("user_id", userID)
 
-	// Load user role and suspension status
+	// Load user role, suspension status, and password_changed_at for JWT invalidation
 	var role string
 	var suspended bool
+	var passwordChangedAt *time.Time
 	err = database.DB.QueryRow(context.Background(),
-		"SELECT COALESCE(role, 'member'), COALESCE(suspended, false) FROM users WHERE id = $1", userID,
-	).Scan(&role, &suspended)
+		"SELECT COALESCE(role, 'member'), COALESCE(suspended, false), password_changed_at FROM users WHERE id = $1", userID,
+	).Scan(&role, &suspended, &passwordChangedAt)
 	if err != nil {
-		role = "member"
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+			"error": "Failed to verify user account",
+		})
 	}
 	if suspended {
 		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
 			"error": "Account suspended. Contact your administrator for assistance.",
 		})
 	}
+
+	// Invalidate JWT if password was changed after the token was issued
+	if passwordChangedAt != nil {
+		if iat, ok := claims["iat"].(float64); ok {
+			issuedAt := time.Unix(int64(iat), 0)
+			if passwordChangedAt.After(issuedAt) {
+				return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+					"error": "Token invalidated due to password change. Please log in again.",
+				})
+			}
+		}
+	}
+
 	c.Locals("user_role", role)
 
 	return c.Next()

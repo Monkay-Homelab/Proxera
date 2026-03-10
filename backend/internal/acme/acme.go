@@ -10,11 +10,11 @@ import (
 	"encoding/pem"
 	"fmt"
 	"log"
-	"os"
 
 	proxeraCrypto "github.com/proxera/backend/internal/crypto"
 	"github.com/proxera/backend/internal/database"
 	dns "github.com/proxera/backend/internal/dns"
+	"github.com/proxera/backend/internal/settings"
 
 	"github.com/go-acme/lego/v4/certificate"
 	"github.com/go-acme/lego/v4/lego"
@@ -103,8 +103,8 @@ func IssueCertificate(email string, accountKey crypto.PrivateKey, domains []stri
 
 	config := lego.NewConfig(user)
 
-	// Use staging if env var is set
-	if os.Getenv("ACME_STAGING") == "true" {
+	// Use staging if configured in settings or env
+	if settings.Get("ACME_STAGING", "false") == "true" {
 		config.CADirURL = "https://acme-staging-v02.api.letsencrypt.org/directory"
 		log.Println("[ACME] Using staging environment")
 	}

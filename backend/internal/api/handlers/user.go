@@ -58,12 +58,14 @@ func ChangePassword(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to hash password"})
 	}
 
-	_, err = database.DB.Exec(ctx, "UPDATE users SET password = $1, updated_at = NOW() WHERE id = $2", string(newHash), userID)
+	_, err = database.DB.Exec(ctx,
+		"UPDATE users SET password = $1, password_changed_at = NOW(), updated_at = NOW() WHERE id = $2",
+		string(newHash), userID)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to update password"})
 	}
 
-	return c.JSON(fiber.Map{"message": "Password updated successfully"})
+	return c.JSON(fiber.Map{"message": "Password updated successfully. Please log in again."})
 }
 
 // GetCurrentUser returns the authenticated user's information

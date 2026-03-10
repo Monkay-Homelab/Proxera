@@ -6,16 +6,21 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
+	fiberrecover "github.com/gofiber/fiber/v2/middleware/recover"
 	"github.com/joho/godotenv"
 	"github.com/proxera/backend/internal/api"
 	"github.com/proxera/backend/internal/api/handlers"
 	"github.com/proxera/backend/internal/database"
+	"github.com/proxera/backend/internal/logging"
 	"github.com/proxera/backend/internal/notifications"
 )
 
 func main() {
+	logging.Setup()
+
 	// Load environment variables - try multiple paths
 	if err := godotenv.Load(".env"); err != nil {
 		if err := godotenv.Load("../../.env"); err != nil {
@@ -45,17 +50,35 @@ func main() {
 	// Start WebSocket hub for agent connections
 	handlers.StartHub()
 
-	// Start background certificate renewal job
-	go handlers.StartCertRenewalJob()
-
-	// Start alert worker and cooldown cleanup
-	go handlers.StartAlertWorker()
-	go notifications.StartCooldownCleanup()
+	// Start background jobs with panic recovery
+	var safeGo func(name string, fn func())
+	safeGo = func(name string, fn func()) {
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("[PANIC] %s crashed: %v — restarting in 5s", name, r)
+					time.Sleep(5 * time.Second)
+					safeGo(name, fn)
+				}
+			}()
+			fn()
+		}()
+	}
+	safeGo("cert-renewal", handlers.StartCertRenewalJob)
+	safeGo("alert-worker", handlers.StartAlertWorker)
+	safeGo("cooldown-cleanup", notifications.StartCooldownCleanup)
 
 	// Create Fiber app
 	app := fiber.New(fiber.Config{
-		AppName: "Proxera API",
+		AppName:      "Proxera API",
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 30 * time.Second,
+		IdleTimeout:  120 * time.Second,
+		BodyLimit:    10 * 1024 * 1024, // 10MB
 	})
+
+	// Panic recovery — prevents a single panic from crashing the server
+	app.Use(fiberrecover.New())
 
 	// Setup routes
 	api.SetupRoutes(app)

@@ -12,17 +12,29 @@ import (
 	"github.com/proxera/backend/internal/models"
 )
 
-// verifyAgentOwnership checks that the agent belongs to the authenticated user
+// verifyAgentAccess checks that the authenticated user can access the agent.
+// Admins can access all agents. Owners and assigned users can access their agents.
 func verifyAgentOwnership(c *fiber.Ctx) (string, error) {
 	userID, _ := c.Locals("user_id").(int)
+	role, _ := c.Locals("user_role").(string)
 	agentID := c.Params("agentId")
 
 	var id int
-	err := database.DB.QueryRow(
-		context.Background(),
-		`SELECT id FROM agents WHERE user_id = $1 AND agent_id = $2`,
-		userID, agentID,
-	).Scan(&id)
+	var err error
+
+	if role == "admin" {
+		err = database.DB.QueryRow(
+			context.Background(),
+			`SELECT id FROM agents WHERE agent_id = $1`,
+			agentID,
+		).Scan(&id)
+	} else {
+		err = database.DB.QueryRow(
+			context.Background(),
+			`SELECT id FROM agents WHERE agent_id = $1 AND (user_id = $2 OR id IN (SELECT agent_id FROM user_agents WHERE user_id = $2))`,
+			agentID, userID,
+		).Scan(&id)
+	}
 	if err != nil {
 		return "", fmt.Errorf("agent not found")
 	}

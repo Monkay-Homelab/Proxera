@@ -1,12 +1,16 @@
 package version
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"path"
 	"runtime"
+	"strings"
 	"time"
 )
 
@@ -75,9 +79,75 @@ func CheckForUpdate(updateURL string) (*VersionResponse, error) {
 	return &versionResp, nil
 }
 
-// DownloadUpdate downloads and installs a new version
+// checksumResponse is the JSON response from the checksum endpoint
+type checksumResponse struct {
+	Filename string `json:"filename"`
+	SHA256   string `json:"sha256"`
+}
+
+// fetchChecksum downloads the expected SHA-256 checksum for the given binary URL.
+// It derives the checksum URL by replacing "/download/" with "/checksum/" in the path.
+func fetchChecksum(downloadURL string) (string, error) {
+	checksumURL := strings.Replace(downloadURL, "/download/", "/checksum/", 1)
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Get(checksumURL)
+	if err != nil {
+		return "", fmt.Errorf("failed to fetch checksum: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("checksum request failed with status: %d", resp.StatusCode)
+	}
+
+	var csResp checksumResponse
+	if err := json.NewDecoder(resp.Body).Decode(&csResp); err != nil {
+		return "", fmt.Errorf("failed to parse checksum response: %w", err)
+	}
+
+	if csResp.SHA256 == "" {
+		return "", fmt.Errorf("server returned empty checksum")
+	}
+
+	return csResp.SHA256, nil
+}
+
+// verifyFileChecksum computes the SHA-256 hash of the file at filePath
+// and compares it against the expected hex-encoded checksum.
+func verifyFileChecksum(filePath, expected string) error {
+	f, err := os.Open(filePath)
+	if err != nil {
+		return fmt.Errorf("failed to open file for checksum verification: %w", err)
+	}
+	defer f.Close()
+
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return fmt.Errorf("failed to read file for checksum verification: %w", err)
+	}
+
+	actual := hex.EncodeToString(h.Sum(nil))
+	if actual != expected {
+		return fmt.Errorf("checksum mismatch: expected %s, got %s", expected, actual)
+	}
+
+	return nil
+}
+
+// DownloadUpdate downloads and installs a new version.
+// It fetches the SHA-256 checksum from the control node and verifies
+// the downloaded binary before installing it.
 func DownloadUpdate(downloadURL, targetPath string) error {
+	filename := path.Base(downloadURL)
 	fmt.Printf("[INFO] Downloading update from %s...\n", downloadURL)
+
+	// Fetch expected checksum before downloading the binary
+	fmt.Printf("[INFO] Fetching checksum for %s...\n", filename)
+	expectedChecksum, err := fetchChecksum(downloadURL)
+	if err != nil {
+		return fmt.Errorf("checksum verification unavailable: %w", err)
+	}
 
 	// Download new binary
 	client := &http.Client{Timeout: 5 * time.Minute}
@@ -103,6 +173,13 @@ func DownloadUpdate(downloadURL, targetPath string) error {
 		return fmt.Errorf("failed to write update: %w", err)
 	}
 	tmpFile.Close()
+
+	// Verify checksum before installing
+	fmt.Println("[INFO] Verifying checksum...")
+	if err := verifyFileChecksum(tmpFile.Name(), expectedChecksum); err != nil {
+		return fmt.Errorf("update aborted: %w", err)
+	}
+	fmt.Println("[OK] Checksum verified")
 
 	// Make executable
 	if err := os.Chmod(tmpFile.Name(), 0755); err != nil {

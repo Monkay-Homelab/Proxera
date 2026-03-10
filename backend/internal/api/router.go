@@ -21,14 +21,18 @@ func SetupRoutes(app *fiber.App) {
 	app.Use(reqstats.TrackRequests())
 	corsOrigins := os.Getenv("CORS_ORIGINS")
 	if corsOrigins == "" {
-		corsOrigins = "*"
+		// Default to same-origin only — no cross-origin requests allowed
+		// Set CORS_ORIGINS to explicitly allow specific origins (e.g., "https://proxera.example.com")
+		corsOrigins = ""
 	}
-	app.Use(cors.New(cors.Config{
-		AllowOrigins:     corsOrigins,
-		AllowHeaders:     "Origin, Content-Type, Accept, Authorization",
-		AllowMethods:     "GET, POST, PUT, PATCH, DELETE, OPTIONS",
-		AllowCredentials: corsOrigins != "*",
-	}))
+	if corsOrigins != "" {
+		app.Use(cors.New(cors.Config{
+			AllowOrigins:     corsOrigins,
+			AllowHeaders:     "Origin, Content-Type, Accept, Authorization",
+			AllowMethods:     "GET, POST, PUT, PATCH, DELETE, OPTIONS",
+			AllowCredentials: true,
+		}))
+	}
 
 	// API routes
 	api := app.Group("/api")
@@ -52,6 +56,7 @@ func SetupRoutes(app *fiber.App) {
 	auth.Post("/register", handlers.Register)
 	auth.Post("/login", handlers.Login)
 	auth.Post("/logout", handlers.Logout)
+	auth.Post("/reset-password", handlers.ResetPassword)
 	auth.Get("/verify-email", handlers.VerifyEmail)
 	auth.Post("/resend-verification", handlers.ResendVerification)
 
@@ -218,6 +223,7 @@ func SetupRoutes(app *fiber.App) {
 	agent := api.Group("/agent")
 	agent.Get("/version", handlers.GetAgentVersion)
 	agent.Get("/download/:filename", handlers.DownloadAgent)
+	agent.Get("/checksum/:filename", handlers.GetAgentChecksum)
 
 	// Install script
 	app.Get("/install.sh", func(c *fiber.Ctx) error {

@@ -188,25 +188,19 @@ func removeHostFromAgent(agentDBID int, domain string) error {
 
 // DeployAllToAgent handles POST /api/agents/:agentId/deploy
 func DeployAllToAgent(c *fiber.Ctx) error {
-	userID, _ := c.Locals("user_id").(int)
 	agentID := c.Params("agentId")
 
-	// Verify agent belongs to user and get DB ID
+	// Verify agent access and get DB ID
 	var agentDBID int
-	err := database.DB.QueryRow(
-		context.Background(),
-		`SELECT id FROM agents WHERE user_id = $1 AND agent_id = $2`,
-		userID, agentID,
-	).Scan(&agentDBID)
-	if err != nil {
+	if err := verifyAgentAccessByID(c, agentID, &agentDBID); err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Agent not found"})
 	}
 
 	// Get all hosts assigned to this agent
 	rows, err := database.DB.Query(
 		context.Background(),
-		`SELECT domain, upstream_url, ssl, websocket, certificate_id, config FROM hosts WHERE agent_id = $1 AND user_id = $2`,
-		agentDBID, userID,
+		`SELECT user_id, domain, upstream_url, ssl, websocket, certificate_id, config FROM hosts WHERE agent_id = $1`,
+		agentDBID,
 	)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to fetch hosts"})
@@ -215,11 +209,12 @@ func DeployAllToAgent(c *fiber.Ctx) error {
 
 	var hosts []map[string]interface{}
 	for rows.Next() {
+		var hostUserID int
 		var domain, upstreamURL string
 		var ssl, ws bool
 		var certID *int
 		var configBytes []byte
-		if err := rows.Scan(&domain, &upstreamURL, &ssl, &ws, &certID, &configBytes); err != nil {
+		if err := rows.Scan(&hostUserID, &domain, &upstreamURL, &ssl, &ws, &certID, &configBytes); err != nil {
 			continue
 		}
 
@@ -232,7 +227,7 @@ func DeployAllToAgent(c *fiber.Ctx) error {
 			}
 		}
 
-		payload, err := buildHostPayload(userID, domain, upstreamURL, ssl, ws, certID, config)
+		payload, err := buildHostPayload(hostUserID, domain, upstreamURL, ssl, ws, certID, config)
 		if err != nil {
 			log.Printf("[Deploy] Failed to build payload for %s: %v", domain, err)
 			continue
@@ -281,17 +276,11 @@ func DeployAllToAgent(c *fiber.Ctx) error {
 
 // ReloadAgent handles POST /api/agents/:agentId/reload
 func ReloadAgent(c *fiber.Ctx) error {
-	userID, _ := c.Locals("user_id").(int)
 	agentID := c.Params("agentId")
 
-	// Verify agent belongs to user
+	// Verify agent access
 	var id int
-	err := database.DB.QueryRow(
-		context.Background(),
-		`SELECT id FROM agents WHERE user_id = $1 AND agent_id = $2`,
-		userID, agentID,
-	).Scan(&id)
-	if err != nil {
+	if err := verifyAgentAccessByID(c, agentID, &id); err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Agent not found"})
 	}
 
