@@ -24,6 +24,7 @@ import (
 	"github.com/proxera/agent/pkg/types"
 	"github.com/proxera/agent/pkg/version"
 	"github.com/proxera/backend/internal/database"
+	"github.com/proxera/backend/internal/settings"
 )
 
 // MetricsInsertFunc is a callback for inserting metrics into the database.
@@ -143,6 +144,9 @@ func New(cfg Config) *Manager {
 	var bs *crowdsec.BouncerSync
 	if csMgr.IsDocker() {
 		bs = crowdsec.NewBouncerSync(csMgr, cfg.NginxConfigPath, nginxMgr.Test, nginxMgr.Reload)
+		bs.SetEnabledFunc(func() bool {
+			return settings.Get("crowdsec_eula_accepted", "") == "true"
+		})
 	}
 
 	return &Manager{

@@ -24,10 +24,12 @@ type BouncerSync struct {
 	confPath           string // nginx conf.d directory
 	testFn             func() error
 	reloadFn           func() error
+	enabledFn          func() bool // returns true if bouncer should be active
 	stopCh             chan struct{}
 	wg                 sync.WaitGroup
 	lastHash           string
 	bouncerRegistered  bool
+	disabled           bool // tracks if we wrote an empty blocklist due to being disabled
 }
 
 // NewBouncerSync creates a new bouncer sync instance.
@@ -42,11 +44,23 @@ func NewBouncerSync(manager *Manager, confPath string, testFn, reloadFn func() e
 	}
 }
 
+// SetEnabledFunc sets a function that controls whether the bouncer is active.
+// When the function returns false, the bouncer writes an empty blocklist.
+func (b *BouncerSync) SetEnabledFunc(fn func() bool) {
+	b.enabledFn = fn
+}
+
 // Start registers the bouncer with CrowdSec, performs an initial sync,
 // and starts the background polling loop.
 func (b *BouncerSync) Start() {
-	b.ensureBouncer()
-	b.writeBlocklist() // ensure file exists even if empty
+	if b.enabledFn != nil && !b.enabledFn() {
+		b.writeEmptyBlocklist()
+		b.disabled = true
+		log.Println("[crowdsec-bouncer] CrowdSec EULA not accepted — starting with empty blocklist")
+	} else {
+		b.ensureBouncer()
+		b.writeBlocklist() // ensure file exists even if empty
+	}
 
 	b.wg.Add(1)
 	go b.loop()
@@ -68,6 +82,18 @@ func (b *BouncerSync) loop() {
 	for {
 		select {
 		case <-ticker.C:
+			if b.enabledFn != nil && !b.enabledFn() {
+				if !b.disabled {
+					b.writeEmptyBlocklist()
+					b.disabled = true
+					log.Println("[crowdsec-bouncer] CrowdSec EULA not accepted — blocklist disabled")
+				}
+				continue
+			}
+			if b.disabled {
+				b.disabled = false
+				log.Println("[crowdsec-bouncer] CrowdSec EULA accepted — blocklist enabled")
+			}
 			if !b.bouncerRegistered {
 				b.ensureBouncer()
 			}
@@ -176,6 +202,31 @@ func (b *BouncerSync) writeBlocklist() {
 	if b.reloadFn != nil {
 		if err := b.reloadFn(); err != nil {
 			log.Printf("[crowdsec-bouncer] Failed to reload nginx: %v", err)
+		}
+	}
+}
+
+// writeEmptyBlocklist writes a blocklist with no banned IPs and reloads nginx.
+func (b *BouncerSync) writeEmptyBlocklist() {
+	content := "# CrowdSec blocklist - disabled (EULA not accepted)\n\ngeo $crowdsec_blocklist {\n    default 0;\n}\n"
+
+	confFile := filepath.Join(b.confPath, "crowdsec_blocklist.conf")
+	if err := os.WriteFile(confFile, []byte(content), 0644); err != nil {
+		log.Printf("[crowdsec-bouncer] Failed to write empty blocklist: %v", err)
+		return
+	}
+
+	b.lastHash = ""
+
+	if b.testFn != nil {
+		if err := b.testFn(); err != nil {
+			log.Printf("[crowdsec-bouncer] Nginx test failed after clearing blocklist: %v", err)
+			return
+		}
+	}
+	if b.reloadFn != nil {
+		if err := b.reloadFn(); err != nil {
+			log.Printf("[crowdsec-bouncer] Failed to reload nginx after clearing blocklist: %v", err)
 		}
 	}
 }
