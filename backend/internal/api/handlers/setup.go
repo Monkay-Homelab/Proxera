@@ -2,6 +2,8 @@ package handlers
 
 import (
 	"context"
+	"os"
+	"os/exec"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -14,8 +16,9 @@ import (
 func SetupStatus(c *fiber.Ctx) error {
 	crowdsecEulaRequired := false
 
-	// Check if CrowdSec is running on the local agent but EULA hasn't been accepted
+	// Check if CrowdSec EULA hasn't been accepted yet
 	if settings.Get("crowdsec_eula_accepted", "") != "true" {
+		// First check if the DB already knows CrowdSec is installed (heartbeat ran)
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
@@ -25,6 +28,14 @@ func SetupStatus(c *fiber.Ctx) error {
 		).Scan(&csInstalled)
 		if err == nil && csInstalled {
 			crowdsecEulaRequired = true
+		} else if container := os.Getenv("CROWDSEC_CONTAINER"); container != "" {
+			// Heartbeat may not have run yet (fresh deploy race condition).
+			// Check directly if the CrowdSec container exists.
+			checkCtx, checkCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer checkCancel()
+			if exec.CommandContext(checkCtx, "docker", "inspect", container).Run() == nil {
+				crowdsecEulaRequired = true
+			}
 		}
 	}
 

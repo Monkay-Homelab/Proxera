@@ -38,6 +38,8 @@ The **Control Node** is a single Go binary that embeds the SvelteKit panel, API 
 **1. Create a `.env` file** with the bare minimum:
 
 ```env
+DB_USER=custom-user-for-database
+DB_NAME=custom-table-name
 DB_PASSWORD=your-secure-database-password
 JWT_SECRET=your-jwt-secret-min-32-chars
 ENCRYPTION_KEY=your-64-hex-char-encryption-key
