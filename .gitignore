@@ -51,7 +51,6 @@ agent/bin/
 .cl*/
 /*.md
 !README.md
-!CLA.md
 !CONTRIBUTING.md
 !LICENSE.md
 

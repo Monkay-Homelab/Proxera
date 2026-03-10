@@ -4,7 +4,6 @@ We welcome contributions from the community.
 
 ## Before You Start
 
-- Read and agree to the [Contributor License Agreement](CLA.md)
 - Check existing issues and pull requests to avoid duplicate work
 
 ## Development Setup
