@@ -51,20 +51,27 @@ Generate secure values with `openssl rand -hex 32`.
 services:
   proxera:
     image: monkayhomelab/proxera:latest
+    container_name: proxera
     restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
-    env_file: .env
     environment:
-      DB_HOST: postgres
+      DB_HOST: proxera-postgres
+      DB_PORT: "5432"
+      DB_USER: ${DB_USER:-proxera}
+      DB_NAME: ${DB_NAME:-proxera}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_SSL_MODE: disable
+      JWT_SECRET: ${JWT_SECRET}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
       API_PORT: "5173"
       PROXERA_DOCKER: "true"
-      NGINX_RELOAD_CMD: "docker kill -s HUP proxera-nginx-1"
-      NGINX_TEST_CMD: "docker exec proxera-nginx-1 nginx -t"
-      CROWDSEC_CONTAINER: "proxera-crowdsec-1"
+      NGINX_RELOAD_CMD: "docker kill -s HUP proxera-nginx"
+      NGINX_TEST_CMD: "docker exec proxera-nginx nginx -t"
+      CROWDSEC_CONTAINER: "proxera-crowdsec"
     ports:
-      - "5173:5173"
+      - "${PROXERA_PORT:-5173}:5173"
     volumes:
       - nginx-conf:/etc/nginx/conf.d
       - nginx-ssl:/etc/nginx/ssl
@@ -75,24 +82,33 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     group_add:
       - "${DOCKER_GID:-999}"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5173/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    stop_grace_period: 30s
 
   postgres:
     image: timescale/timescaledb:2.17.2-pg16
+    container_name: proxera-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_DB: proxera
-      POSTGRES_USER: proxera
+      POSTGRES_DB: ${DB_NAME:-proxera}
+      POSTGRES_USER: ${DB_USER:-proxera}
       POSTGRES_PASSWORD: ${DB_PASSWORD}
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U proxera"]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-proxera}"]
       interval: 5s
       timeout: 5s
       retries: 5
 
   nginx:
     image: nginx:1.27
+    container_name: proxera-nginx
     restart: unless-stopped
     ports:
       - "80:80"
@@ -104,9 +120,16 @@ services:
       - acme-challenge:/var/www/proxera-acme:ro
     depends_on:
       - proxera
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost/ || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
 
   crowdsec:
     image: crowdsecurity/crowdsec:v1.6.4
+    container_name: proxera-crowdsec
     restart: unless-stopped
     environment:
       COLLECTIONS: "crowdsecurity/nginx"
@@ -116,6 +139,12 @@ services:
       - crowdsec-data:/var/lib/crowdsec/data
     depends_on:
       - nginx
+    healthcheck:
+      test: ["CMD", "cscli", "version"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
 
 volumes:
   pgdata:

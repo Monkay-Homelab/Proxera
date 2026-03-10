@@ -93,7 +93,7 @@ func DetectNginxVersion() string {
 	// Try local nginx first
 	out, err := exec.Command("nginx", "-v").CombinedOutput()
 	if err != nil {
-		// Docker mode: extract container from NGINX_TEST_CMD (e.g. "docker exec project-nginx-1 nginx -t")
+		// Docker mode: extract container from NGINX_TEST_CMD (e.g. "docker exec proxera-nginx nginx -t")
 		testCmd := os.Getenv("NGINX_TEST_CMD")
 		if testCmd != "" {
 			parts := strings.Fields(testCmd)

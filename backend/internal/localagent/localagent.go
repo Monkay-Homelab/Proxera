@@ -59,8 +59,8 @@ type Config struct {
 	NginxConfigPath  string
 	NginxEnabledPath string
 	NginxLogDir      string
-	NginxReloadCmd   string // override for Docker: e.g. "docker exec proxera-nginx-1 nginx -s reload"
-	NginxTestCmd     string // override for Docker: e.g. "docker exec proxera-nginx-1 nginx -t"
+	NginxReloadCmd   string // override for Docker: e.g. "docker kill -s HUP proxera-nginx"
+	NginxTestCmd     string // override for Docker: e.g. "docker exec proxera-nginx nginx -t"
 	MetricsInterval  time.Duration
 }
 
@@ -540,7 +540,7 @@ func DetectSystem() SystemStatus {
 				// Try to get version from the nginx container
 				reloadCmd := os.Getenv("NGINX_RELOAD_CMD")
 				if reloadCmd != "" {
-					// Derive container name from reload cmd (e.g. "docker kill -s HUP project-nginx-1")
+					// Derive container name from reload cmd (e.g. "docker kill -s HUP proxera-nginx")
 					// Use "docker exec <container> nginx -v" instead
 					parts := strings.Fields(reloadCmd)
 					if len(parts) >= 1 {

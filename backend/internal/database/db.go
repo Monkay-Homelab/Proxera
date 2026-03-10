@@ -15,7 +15,7 @@ var DB *pgxpool.Pool
 func Connect() error {
 	sslMode := os.Getenv("DB_SSL_MODE")
 	if sslMode == "" {
-		sslMode = "require" // Secure default for remote connections
+		sslMode = "prefer"
 	}
 
 	dsn := fmt.Sprintf(

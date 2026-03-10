@@ -5,18 +5,25 @@ services:
       dockerfile: Dockerfile
       args:
         VERSION: ${VERSION:-dev}
+    container_name: proxera
     restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
-    env_file: .env
     environment:
-      DB_HOST: postgres
+      DB_HOST: proxera-postgres
+      DB_PORT: "5432"
+      DB_USER: ${DB_USER:-proxera}
+      DB_NAME: ${DB_NAME:-proxera}
+      DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD must be set in .env}
+      DB_SSL_MODE: disable
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set in .env}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?ENCRYPTION_KEY must be set in .env}
       API_PORT: "5173"
       PROXERA_DOCKER: "true"
-      NGINX_RELOAD_CMD: "docker kill -s HUP project-nginx-1"
-      NGINX_TEST_CMD: "docker exec project-nginx-1 nginx -t"
-      CROWDSEC_CONTAINER: "project-crowdsec-1"
+      NGINX_RELOAD_CMD: "docker kill -s HUP proxera-nginx"
+      NGINX_TEST_CMD: "docker exec proxera-nginx nginx -t"
+      CROWDSEC_CONTAINER: "proxera-crowdsec"
     ports:
       - "${PROXERA_PORT:-5173}:5173"
     volumes:
@@ -39,6 +46,7 @@ services:
 
   postgres:
     image: timescale/timescaledb:2.17.2-pg16
+    container_name: proxera-postgres
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${DB_NAME:-proxera}
@@ -54,6 +62,7 @@ services:
 
   nginx:
     image: nginx:1.27
+    container_name: proxera-nginx
     restart: unless-stopped
     ports:
       - "80:80"
@@ -74,6 +83,7 @@ services:
 
   crowdsec:
     image: crowdsecurity/crowdsec:v1.6.4
+    container_name: proxera-crowdsec
     restart: unless-stopped
     environment:
       COLLECTIONS: "crowdsecurity/nginx"
