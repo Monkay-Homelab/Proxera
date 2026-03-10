@@ -28,7 +28,7 @@ func ExportMetrics(c *fiber.Ctx) error {
 		agentQuery = `SELECT agent_id, name FROM agents WHERE user_id = $1
 			UNION
 			SELECT a.agent_id, a.name FROM agents a
-			JOIN user_agents ua ON ua.agent_id = a.agent_id
+			JOIN user_agents ua ON ua.agent_id = a.id
 			WHERE ua.user_id = $1
 			ORDER BY name`
 		agentArgs = append(agentArgs, userID)

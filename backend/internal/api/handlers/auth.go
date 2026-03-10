@@ -140,16 +140,28 @@ func Register(c *fiber.Ctx) error {
 		// treat unknown modes as open
 	}
 
-	// Create user
+	// Create user — use advisory lock to prevent race condition on first-user-is-admin
 	var user models.User
+	ctx := context.Background()
+	tx, txErr := database.DB.Begin(ctx)
+	if txErr != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Failed to create user",
+		})
+	}
+	defer tx.Rollback(ctx)
+
+	// Advisory lock ensures only one concurrent registration can check user count
+	tx.Exec(ctx, `SELECT pg_advisory_xact_lock(1)`)
+
 	query := `
 		INSERT INTO users (email, name, password, role)
 		VALUES ($1, $2, $3, CASE WHEN (SELECT COUNT(*) FROM users) = 0 THEN 'admin' ELSE 'member' END)
 		RETURNING id, email, name, role, COALESCE(email_verified, false), created_at, updated_at
 	`
 
-	err = database.DB.QueryRow(
-		context.Background(),
+	err = tx.QueryRow(
+		ctx,
 		query,
 		req.Email,
 		req.Name,
@@ -163,6 +175,12 @@ func Register(c *fiber.Ctx) error {
 				"error": "Email already registered",
 			})
 		}
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Failed to create user",
+		})
+	}
+
+	if err := tx.Commit(ctx); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error": "Failed to create user",
 		})
@@ -410,6 +428,71 @@ func Logout(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{
 		"message": "Logged out successfully",
 	})
+}
+
+// ResetPassword consumes a password reset token and sets a new password.
+// POST /api/auth/reset-password
+func ResetPassword(c *fiber.Ctx) error {
+	var req struct {
+		Token       string `json:"token"`
+		NewPassword string `json:"new_password"`
+	}
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid request body"})
+	}
+	if req.Token == "" || req.NewPassword == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Token and new password are required"})
+	}
+	if len(req.NewPassword) < 8 {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Password must be at least 8 characters"})
+	}
+	if len(req.NewPassword) > 72 {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Password must be 72 characters or less"})
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Look up the token
+	var tokenID int64
+	var userID int
+	var expiresAt time.Time
+	var usedAt *time.Time
+	err := database.DB.QueryRow(ctx,
+		`SELECT id, user_id, expires_at, used_at FROM password_reset_tokens WHERE token = $1`,
+		req.Token,
+	).Scan(&tokenID, &userID, &expiresAt, &usedAt)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid or expired reset token"})
+	}
+
+	if usedAt != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "This reset token has already been used"})
+	}
+	if time.Now().After(expiresAt) {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Reset token has expired. Please request a new one."})
+	}
+
+	// Hash the new password
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.NewPassword), bcrypt.DefaultCost)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to hash password"})
+	}
+
+	// Update password and mark token as used
+	_, err = database.DB.Exec(ctx,
+		`UPDATE users SET password = $1, password_changed_at = NOW(), updated_at = NOW() WHERE id = $2`,
+		string(hashedPassword), userID,
+	)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to update password"})
+	}
+
+	_, _ = database.DB.Exec(ctx,
+		`UPDATE password_reset_tokens SET used_at = NOW() WHERE id = $1`, tokenID,
+	)
+
+	return c.JSON(fiber.Map{"message": "Password reset successfully. You can now log in with your new password."})
 }
 
 // generateJWT creates a JWT token for a user

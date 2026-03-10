@@ -26,9 +26,16 @@ services:
       - acme-challenge:/var/www/proxera-acme
       - proxera-data:/var/lib/proxera
       - agent-downloads:/app/downloads
-      - /var/run/docker.sock:/var/run/docker.sock
+      - /var/run/docker.sock:/var/run/docker.sock:ro
     group_add:
       - "${DOCKER_GID:-999}"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5173/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    stop_grace_period: 30s
 
   postgres:
     image: timescale/timescaledb:2.17.2-pg16
@@ -36,7 +43,7 @@ services:
     environment:
       POSTGRES_DB: ${DB_NAME:-proxera}
       POSTGRES_USER: ${DB_USER:-proxera}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-proxera_dev_password}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD must be set in .env}
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -53,11 +60,17 @@ services:
       - "443:443"
     volumes:
       - nginx-conf:/etc/nginx/conf.d
-      - nginx-ssl:/etc/nginx/ssl
+      - nginx-ssl:/etc/nginx/ssl:ro
       - nginx-logs:/var/log/nginx
-      - acme-challenge:/var/www/proxera-acme
+      - acme-challenge:/var/www/proxera-acme:ro
     depends_on:
       - proxera
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost/ || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
 
   crowdsec:
     image: crowdsecurity/crowdsec:v1.6.4
@@ -70,6 +83,12 @@ services:
       - crowdsec-data:/var/lib/crowdsec/data
     depends_on:
       - nginx
+    healthcheck:
+      test: ["CMD", "cscli", "version"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
 
 volumes:
   pgdata:

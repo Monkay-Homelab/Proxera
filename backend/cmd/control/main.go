@@ -14,15 +14,18 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/filesystem"
+	fiberrecover "github.com/gofiber/fiber/v2/middleware/recover"
 	"github.com/joho/godotenv"
 	"github.com/proxera/agent/pkg/metrics"
 	"github.com/proxera/backend/internal/api"
 	"github.com/proxera/backend/internal/api/handlers"
 	"github.com/proxera/backend/internal/database"
 	"github.com/proxera/backend/internal/localagent"
+	"github.com/proxera/backend/internal/logging"
 	"github.com/proxera/backend/internal/models"
 	"github.com/proxera/backend/internal/notifications"
 )
@@ -31,6 +34,7 @@ import (
 var panelFS embed.FS
 
 func main() {
+	logging.Setup()
 	log.Println("Proxera Control Node starting...")
 
 	// Load environment variables
@@ -62,10 +66,23 @@ func main() {
 	// Start WebSocket hub for remote agent connections
 	handlers.StartHub()
 
-	// Start background jobs
-	go handlers.StartCertRenewalJob()
-	go handlers.StartAlertWorker()
-	go notifications.StartCooldownCleanup()
+	// Start background jobs with panic recovery
+	var safeGo func(name string, fn func())
+	safeGo = func(name string, fn func()) {
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("[PANIC] %s crashed: %v — restarting in 5s", name, r)
+					time.Sleep(5 * time.Second)
+					safeGo(name, fn)
+				}
+			}()
+			fn()
+		}()
+	}
+	safeGo("cert-renewal", handlers.StartCertRenewalJob)
+	safeGo("alert-worker", handlers.StartAlertWorker)
+	safeGo("cooldown-cleanup", notifications.StartCooldownCleanup)
 
 	// --- First-run detection ---
 	isDocker := os.Getenv("PROXERA_DOCKER") == "true"
@@ -168,8 +185,16 @@ func main() {
 
 	// Create Fiber app
 	app := fiber.New(fiber.Config{
-		AppName: "Proxera Control Node",
+		AppName:               "Proxera Control Node",
+		ReadTimeout:           30 * time.Second,
+		WriteTimeout:          30 * time.Second,
+		IdleTimeout:           120 * time.Second,
+		BodyLimit:             10 * 1024 * 1024, // 10MB
+		DisableStartupMessage: false,
 	})
+
+	// Panic recovery — prevents a single panic from crashing the server
+	app.Use(fiberrecover.New())
 
 	// Setup API routes (same as standalone backend)
 	api.SetupRoutes(app)

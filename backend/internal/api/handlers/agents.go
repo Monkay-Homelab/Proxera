@@ -59,15 +59,30 @@ func MigrateAPIKeyHashes() {
 		}
 		hash := HashAPIKey(plainKey)
 		if _, err := database.DB.Exec(context.Background(),
-			`UPDATE agents SET api_key_hash = $1 WHERE id = $2`, hash, id); err != nil {
+			`UPDATE agents SET api_key_hash = $1, api_key = '' WHERE id = $2`, hash, id); err != nil {
 			log.Printf("Failed to migrate API key hash for agent %d: %v", id, err)
 		} else {
 			migrated++
 		}
 	}
 	if migrated > 0 {
-		log.Printf("Migrated %d agent API key hashes", migrated)
+		log.Printf("Migrated %d agent API key hashes (plaintext cleared)", migrated)
 	}
+}
+
+// verifyAgentAccessByID checks that the authenticated user can access the given agent.
+// Admins can access all agents. Owners and assigned users can access their agents.
+func verifyAgentAccessByID(c *fiber.Ctx, agentID string, id *int) error {
+	userID, _ := c.Locals("user_id").(int)
+	role, _ := c.Locals("user_role").(string)
+
+	if role == "admin" {
+		return database.DB.QueryRow(context.Background(),
+			`SELECT id FROM agents WHERE agent_id = $1`, agentID).Scan(id)
+	}
+	return database.DB.QueryRow(context.Background(),
+		`SELECT id FROM agents WHERE agent_id = $1 AND (user_id = $2 OR id IN (SELECT agent_id FROM user_agents WHERE user_id = $2))`,
+		agentID, userID).Scan(id)
 }
 
 // markAgentOfflineIfStale returns "offline" if the agent hasn't sent a heartbeat in 90+ seconds
@@ -116,10 +131,10 @@ func RegisterAgent(c *fiber.Ctx) error {
 	}
 	apiKeyHash := HashAPIKey(apiKey)
 
-	// Insert agent into database
+	// Insert agent into database (only store hash, never plaintext)
 	query := `
 		INSERT INTO agents (user_id, agent_id, name, api_key, api_key_hash, version, os, arch, status)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'offline')
+		VALUES ($1, $2, $3, '', $4, $5, $6, $7, 'offline')
 		RETURNING id, created_at
 	`
 
@@ -131,7 +146,6 @@ func RegisterAgent(c *fiber.Ctx) error {
 		userID,
 		agentID,
 		req.Name,
-		apiKey,
 		apiKeyHash,
 		req.Version,
 		req.OS,
@@ -331,6 +345,7 @@ func GetAgent(c *fiber.Ctx) error {
 // RenameAgent handles PATCH /api/agents/:agentId — updates the agent's display name
 func RenameAgent(c *fiber.Ctx) error {
 	userID, _ := c.Locals("user_id").(int)
+	role, _ := c.Locals("user_role").(string)
 	agentID := c.Params("agentId")
 
 	var req struct {
@@ -343,12 +358,21 @@ func RenameAgent(c *fiber.Ctx) error {
 	if req.Name == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Name cannot be empty"})
 	}
+	if len(req.Name) > 255 {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Name must be 255 characters or less"})
+	}
 
-	result, err := database.DB.Exec(
-		context.Background(),
-		`UPDATE agents SET name = $1, updated_at = NOW() WHERE user_id = $2 AND agent_id = $3`,
-		req.Name, userID, agentID,
-	)
+	var query string
+	var args []interface{}
+	if role == "admin" {
+		query = `UPDATE agents SET name = $1, updated_at = NOW() WHERE agent_id = $2`
+		args = []interface{}{req.Name, agentID}
+	} else {
+		query = `UPDATE agents SET name = $1, updated_at = NOW() WHERE agent_id = $2 AND (user_id = $3 OR id IN (SELECT agent_id FROM user_agents WHERE user_id = $3))`
+		args = []interface{}{req.Name, agentID, userID}
+	}
+
+	result, err := database.DB.Exec(context.Background(), query, args...)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to rename agent"})
 	}
@@ -362,10 +386,19 @@ func RenameAgent(c *fiber.Ctx) error {
 // DeleteAgent removes an agent
 func DeleteAgent(c *fiber.Ctx) error {
 	userID, _ := c.Locals("user_id").(int)
+	role, _ := c.Locals("user_role").(string)
 	agentID := c.Params("agentId")
 
-	query := `DELETE FROM agents WHERE user_id = $1 AND agent_id = $2`
-	result, err := database.DB.Exec(context.Background(), query, userID, agentID)
+	var query string
+	var args []interface{}
+	if role == "admin" {
+		query = `DELETE FROM agents WHERE agent_id = $1`
+		args = []interface{}{agentID}
+	} else {
+		query = `DELETE FROM agents WHERE user_id = $1 AND agent_id = $2`
+		args = []interface{}{userID, agentID}
+	}
+	result, err := database.DB.Exec(context.Background(), query, args...)
 
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
@@ -439,14 +472,11 @@ func UpdateAgentStatus(agentID string, status string) error {
 // UpdateAgent triggers an update for a specific agent via WebSocket command
 // The agent will download and install the latest version, then automatically restart
 func UpdateAgent(c *fiber.Ctx) error {
-	userID, _ := c.Locals("user_id").(int)
 	agentID := c.Params("agentId")
 
-	// Verify agent belongs to user
-	query := `SELECT id FROM agents WHERE user_id = $1 AND agent_id = $2`
+	// Verify agent access
 	var id int
-	err := database.DB.QueryRow(context.Background(), query, userID, agentID).Scan(&id)
-	if err != nil {
+	if err := verifyAgentAccessByID(c, agentID, &id); err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
 			"error": "Agent not found",
 		})
@@ -467,8 +497,7 @@ func UpdateAgent(c *fiber.Ctx) error {
 		},
 	}
 
-	err = SendCommandToAgent(agentID, command)
-	if err != nil {
+	if err := SendCommandToAgent(agentID, command); err != nil {
 		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
 			"error": "Agent is not connected or command failed",
 		})
@@ -481,14 +510,11 @@ func UpdateAgent(c *fiber.Ctx) error {
 
 // UpgradeAgentNginx sends an upgrade_nginx command to a specific agent
 func UpgradeAgentNginx(c *fiber.Ctx) error {
-	userID, _ := c.Locals("user_id").(int)
 	agentID := c.Params("agentId")
 
-	// Verify agent belongs to user
-	query := `SELECT id FROM agents WHERE user_id = $1 AND agent_id = $2`
+	// Verify agent access
 	var id int
-	err := database.DB.QueryRow(context.Background(), query, userID, agentID).Scan(&id)
-	if err != nil {
+	if err := verifyAgentAccessByID(c, agentID, &id); err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
 			"error": "Agent not found",
 		})
@@ -506,8 +532,7 @@ func UpgradeAgentNginx(c *fiber.Ctx) error {
 		Payload: map[string]interface{}{},
 	}
 
-	err = SendCommandToAgent(agentID, command)
-	if err != nil {
+	if err := SendCommandToAgent(agentID, command); err != nil {
 		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
 			"error": "Agent is not connected or command failed",
 		})
@@ -521,14 +546,11 @@ func UpgradeAgentNginx(c *fiber.Ctx) error {
 // GetAgentLogs requests logs from a specific agent via WebSocket command
 // Waits up to 10 seconds for the agent to respond with log data
 func GetAgentLogs(c *fiber.Ctx) error {
-	userID, _ := c.Locals("user_id").(int)
 	agentID := c.Params("agentId")
 
-	// Verify agent belongs to user
-	query := `SELECT id FROM agents WHERE user_id = $1 AND agent_id = $2`
+	// Verify agent access
 	var id int
-	err := database.DB.QueryRow(context.Background(), query, userID, agentID).Scan(&id)
-	if err != nil {
+	if err := verifyAgentAccessByID(c, agentID, &id); err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
 			"error": "Agent not found",
 		})
@@ -580,11 +602,11 @@ func AuthenticateAgent(apiKey string) (*models.Agent, error) {
 		       COALESCE(nginx_version, ''),
 		       created_at, updated_at
 		FROM agents
-		WHERE api_key_hash = $1 OR (api_key_hash IS NULL AND api_key = $2)
+		WHERE api_key_hash = $1
 	`
 
 	var agent models.Agent
-	err := database.DB.QueryRow(context.Background(), query, keyHash, apiKey).Scan(
+	err := database.DB.QueryRow(context.Background(), query, keyHash).Scan(
 		&agent.ID,
 		&agent.UserID,
 		&agent.AgentID,
@@ -616,18 +638,11 @@ func AuthenticateAgent(apiKey string) (*models.Agent, error) {
 // SetMetricsInterval sends a set_metrics_interval command to an agent
 func SetMetricsInterval(c *fiber.Ctx) error {
 	agentID := c.Params("agentId")
-	userID, _ := c.Locals("user_id").(int)
 
-	// Verify agent belongs to user
-	var ownerID int
-	err := database.DB.QueryRow(context.Background(),
-		`SELECT user_id FROM agents WHERE agent_id = $1`, agentID,
-	).Scan(&ownerID)
-	if err != nil {
+	// Verify agent access
+	var id int
+	if err := verifyAgentAccessByID(c, agentID, &id); err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Agent not found"})
-	}
-	if ownerID != userID {
-		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Access denied"})
 	}
 
 	var body struct {
@@ -648,10 +663,9 @@ func SetMetricsInterval(c *fiber.Ctx) error {
 	}
 
 	// Save to database so it persists across refreshes and restarts
-	_, err = database.DB.Exec(context.Background(),
+	if _, err := database.DB.Exec(context.Background(),
 		`UPDATE agents SET metrics_interval = $1 WHERE agent_id = $2`, body.Interval, agentID,
-	)
-	if err != nil {
+	); err != nil {
 		log.Printf("Failed to save metrics_interval to DB: %v", err)
 	}
 
