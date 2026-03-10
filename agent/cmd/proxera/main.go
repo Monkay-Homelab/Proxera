@@ -103,9 +103,9 @@ func main() {
 		fmt.Printf("[OK] Agent registered successfully!\n\n")
 		fmt.Printf("Agent ID: %s\n", resp.AgentID)
 		fmt.Printf("API Key:  %s\n", resp.APIKey)
-		fmt.Printf("\nSave these credentials to your config file:\n")
+		fmt.Printf("\nSave these credentials — the API key is shown only once.\n")
+		fmt.Printf("Add them to your config file:\n")
 		fmt.Printf("  agent_id: %s\n", resp.AgentID)
-		fmt.Printf("  api_key: %s\n", resp.APIKey)
 		fmt.Printf("  panel_url: %s\n", *panelURL)
 		fmt.Printf("\nTo connect to panel:\n")
 		fmt.Printf("  proxera -connect\n")
@@ -243,7 +243,7 @@ func main() {
 
 	case *applyAll:
 		// Apply all: generate + enable + reload with rollback
-		fmt.Println("[INFO] Applying all configurations...\n")
+		fmt.Println("[INFO] Applying all configurations...")
 
 		for _, host := range cfg.Hosts {
 			fmt.Printf("[INFO] Processing %s...\n", host.Domain)

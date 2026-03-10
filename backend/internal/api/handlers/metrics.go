@@ -31,6 +31,9 @@ func InsertMetricsBuckets(agentID string, buckets []models.IncomingMetricsBucket
 		cache_hits, cache_misses, unique_ips, connection_count
 	) VALUES `)
 
+	if len(buckets) > 10000 {
+		return fmt.Errorf("too many metric buckets: %d", len(buckets))
+	}
 	args := make([]interface{}, 0, len(buckets)*21)
 	for i, b := range buckets {
 		if i > 0 {

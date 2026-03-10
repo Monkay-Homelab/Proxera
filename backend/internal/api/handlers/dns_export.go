@@ -5,7 +5,7 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
-	"crypto/sha256"
+	"crypto/sha512"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -311,7 +311,7 @@ func ExportBackup(c *fiber.Ctx) error {
 	}
 
 	// Checksum of ciphertext for integrity verification
-	hash := sha256.Sum256(ct)
+	hash := sha512.Sum512(ct)
 
 	export := exportFile{
 		Version:    2,
@@ -352,7 +352,7 @@ func ImportBackup(c *fiber.Ctx) error {
 	}
 
 	// Verify checksum
-	hash := sha256.Sum256(ct)
+	hash := sha512.Sum512(ct)
 	if hex.EncodeToString(hash[:]) != body.Backup.Checksum {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Backup integrity check failed"})
 	}

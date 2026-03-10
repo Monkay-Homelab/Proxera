@@ -42,19 +42,6 @@ func (p *PorkbunProvider) post(ctx context.Context, url string, body map[string]
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	// Log sanitized body (mask credentials)
-	sanitized := make(map[string]interface{})
-	for k, v := range body {
-		if k == "apikey" || k == "secretapikey" {
-			sanitized[k] = "[redacted]"
-		} else {
-			sanitized[k] = v
-		}
-	}
-	if sb, _ := json.Marshal(sanitized); sb != nil {
-		log.Printf("[Porkbun] request body: %s", string(sb))
-	}
-
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(data))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)

@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -191,14 +192,25 @@ func (m *Manager) ListBackups(domain string) ([]BackupInfo, error) {
 	return infos, nil
 }
 
-// GetBackupContent returns the raw text of a named backup file.
-func (m *Manager) GetBackupContent(domain, filename string) (string, error) {
-	// Prevent path traversal
-	if filepath.Base(filename) != filename {
+// safeBackupPath validates that filename does not escape the backup directory.
+func (m *Manager) safeBackupPath(filename string) (string, error) {
+	cleaned := filepath.Clean(filename)
+	if cleaned != filepath.Base(cleaned) {
 		return "", fmt.Errorf("invalid backup filename")
 	}
+	full := filepath.Join(m.backupPath, cleaned)
+	if !strings.HasPrefix(full, filepath.Clean(m.backupPath)+string(filepath.Separator)) {
+		return "", fmt.Errorf("invalid backup filename")
+	}
+	return full, nil
+}
 
-	backupFile := filepath.Join(m.backupPath, filename)
+// GetBackupContent returns the raw text of a named backup file.
+func (m *Manager) GetBackupContent(domain, filename string) (string, error) {
+	backupFile, err := m.safeBackupPath(filename)
+	if err != nil {
+		return "", err
+	}
 	data, err := os.ReadFile(backupFile)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -213,12 +225,10 @@ func (m *Manager) GetBackupContent(domain, filename string) (string, error) {
 func (m *Manager) RestoreSpecificBackup(domain, filename string) error {
 	safeDomain := SanitizeDomain(domain)
 
-	// Validate filename to prevent path traversal
-	if filepath.Base(filename) != filename {
-		return fmt.Errorf("invalid backup filename")
+	backupFile, err := m.safeBackupPath(filename)
+	if err != nil {
+		return err
 	}
-
-	backupFile := filepath.Join(m.backupPath, filename)
 	if _, err := os.Stat(backupFile); os.IsNotExist(err) {
 		return fmt.Errorf("backup file not found: %s", filename)
 	}

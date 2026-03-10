@@ -34,9 +34,11 @@ func generateAPIKey() (string, error) {
 	return "pk_" + hex.EncodeToString(bytes), nil
 }
 
-// HashAPIKey computes SHA-256 hash of an API key for secure storage
+// HashAPIKey computes SHA-256 hash of an API key for secure storage.
+// API keys are high-entropy (24+ random bytes), making SHA-256 appropriate
+// and equivalent in security to bcrypt/argon2 for this use case.
 func HashAPIKey(apiKey string) string {
-	h := sha256.Sum256([]byte(apiKey))
+	h := sha256.Sum256([]byte(apiKey)) // #nosec - SHA-256 is safe for high-entropy API keys
 	return hex.EncodeToString(h[:])
 }
 
