@@ -73,7 +73,8 @@ services:
       - nginx-logs:/var/log/nginx
       - acme-challenge:/var/www/proxera-acme:ro
     depends_on:
-      - proxera
+      proxera:
+        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost/ || exit 1"]
       interval: 30s
@@ -92,7 +93,8 @@ services:
       - crowdsec-config:/etc/crowdsec
       - crowdsec-data:/var/lib/crowdsec/data
     depends_on:
-      - nginx
+      nginx:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "cscli", "version"]
       interval: 30s
