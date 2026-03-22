@@ -65,6 +65,8 @@ jobs:
       - name: Check panel
         run: npm run check
         working-directory: panel
+        env:
+          PUBLIC_API_URL: ""
 
   build-and-push:
     needs: test

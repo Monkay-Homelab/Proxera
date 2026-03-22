@@ -94,6 +94,8 @@ jobs:
       - name: Check
         run: npm run check
         working-directory: panel
+        env:
+          PUBLIC_API_URL: ""
 
       - name: Audit dependencies
         run: npm audit --audit-level=high
