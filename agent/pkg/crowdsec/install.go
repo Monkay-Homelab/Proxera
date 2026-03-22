@@ -244,6 +244,8 @@ func (m *Manager) installFirewallBouncer() error {
 // installNginxBouncer installs just the nginx bouncer package.
 // NOTE: Not used during auto-install (incompatible with nginx.org packages).
 // Kept for manual bouncer installs on distro-nginx servers.
+//
+//nolint:unused // intentionally retained for future manual bouncer install support
 func (m *Manager) installNginxBouncer() error {
 	pkg := "crowdsec-nginx-bouncer"
 	if _, err := exec.LookPath("apt-get"); err == nil {

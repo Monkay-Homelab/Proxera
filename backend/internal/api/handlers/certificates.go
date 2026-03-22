@@ -5,7 +5,7 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
-	"log"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -169,8 +169,8 @@ func IssueCertificate(c *fiber.Ctx) error {
 // issueCertInBackground performs the ACME challenge and updates the DB record
 func issueCertInBackground(certID, userID int, role string, req IssueCertificateRequest) {
 	setError := func(msg string) {
-		log.Printf("[ACME] Certificate %d failed: %s", certID, msg)
-		database.DB.Exec(context.Background(),
+		slog.Error("certificate issuance failed", "component", "certificates", "cert_id", certID, "error", msg)
+		_, _ = database.DB.Exec(context.Background(),
 			`UPDATE certificates SET status = 'error', updated_at = NOW() WHERE id = $1`,
 			certID,
 		)
@@ -197,7 +197,7 @@ func issueCertInBackground(certID, userID int, role string, req IssueCertificate
 		return
 	}
 
-	log.Printf("[ACME] Issuing certificate %d for domains: %v (user %d)", certID, req.Domains, userID)
+	slog.Info("issuing certificate", "component", "certificates", "cert_id", certID, "domains", req.Domains, "user_id", userID)
 
 	type acmeResult struct {
 		cert *certificate.Resource
@@ -248,11 +248,11 @@ func issueCertInBackground(certID, userID int, role string, req IssueCertificate
 		cert.CertURL, now, expiresAt, certID,
 	)
 	if err != nil {
-		log.Printf("[ACME] Certificate %d issued but failed to store: %v", certID, err)
+		slog.Error("certificate issued but failed to store", "component", "certificates", "cert_id", certID, "error", err)
 		return
 	}
 
-	log.Printf("[ACME] Certificate issued and stored: id=%d domain=%s expires=%s", certID, req.Domains[0], expiresAt)
+	slog.Info("certificate issued and stored", "component", "certificates", "cert_id", certID, "domain", req.Domains[0], "expires_at", expiresAt)
 }
 
 // RetryCertificate handles POST /api/certificates/:id/retry
@@ -293,7 +293,7 @@ func RetryCertificate(c *fiber.Ctx) error {
 	}
 
 	// Reset to pending
-	database.DB.Exec(context.Background(),
+	_, _ = database.DB.Exec(context.Background(),
 		`UPDATE certificates SET status = 'pending', updated_at = NOW() WHERE id = $1`,
 		certID,
 	)

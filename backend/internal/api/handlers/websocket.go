@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -17,10 +17,9 @@ import (
 
 // AgentConnection represents an active agent WebSocket connection
 type AgentConnection struct {
-	Agent  *models.Agent
-	Conn   *websocket.Conn
-	Send   chan []byte
-	mu     sync.Mutex
+	Agent *models.Agent
+	Conn  *websocket.Conn
+	Send  chan []byte
 }
 
 // PendingResponse tracks a pending command response
@@ -38,6 +37,9 @@ type Hub struct {
 	mu               sync.RWMutex
 }
 
+// alertSem limits concurrent alert evaluation goroutines across all agents.
+var alertSem = make(chan struct{}, MaxConcurrentAlertEvals)
+
 var hub = &Hub{
 	agents:           make(map[string]*AgentConnection),
 	register:         make(chan *AgentConnection),
@@ -53,10 +55,10 @@ func (h *Hub) Run() {
 			h.mu.Lock()
 			h.agents[conn.Agent.AgentID] = conn
 			h.mu.Unlock()
-			log.Printf("Agent registered: %s (%s)", conn.Agent.Name, conn.Agent.AgentID)
+			slog.Info("agent registered", "component", "ws", "agent_id", conn.Agent.AgentID, "name", conn.Agent.Name)
 
 			// Update agent status to online (preserves existing IP data)
-			UpdateAgentStatus(conn.Agent.AgentID, "online")
+			_ = UpdateAgentStatus(conn.Agent.AgentID, "online")
 
 			// Resolve any open agent_offline alerts
 			go triggerAgentOnlineResolution(conn.Agent.AgentID, conn.Agent.UserID)
@@ -76,7 +78,7 @@ func (h *Hub) Run() {
 					if err == nil {
 						select {
 						case c.Send <- data:
-							log.Printf("Sent stored metrics_interval=%d to agent %s", interval, c.Agent.AgentID)
+							slog.Info("sent stored metrics interval to agent", "component", "ws", "agent_id", c.Agent.AgentID, "interval", interval)
 						default:
 						}
 					}
@@ -88,15 +90,15 @@ func (h *Hub) Run() {
 			if existing, ok := h.agents[conn.Agent.AgentID]; ok && existing == conn {
 				delete(h.agents, conn.Agent.AgentID)
 				close(conn.Send)
-				log.Printf("Agent unregistered: %s (%s)", conn.Agent.Name, conn.Agent.AgentID)
+				slog.Info("agent unregistered", "component", "ws", "agent_id", conn.Agent.AgentID, "name", conn.Agent.Name)
 
 				// Update agent status to offline (preserves existing IP data)
-				UpdateAgentStatus(conn.Agent.AgentID, "offline")
+				_ = UpdateAgentStatus(conn.Agent.AgentID, "offline")
 
 				// Trigger agent offline alert
 				go func(a *models.Agent) {
 					var wanIP string
-					database.DB.QueryRow(context.Background(),
+					_ = database.DB.QueryRow(context.Background(),
 						`SELECT COALESCE(wan_ip, '') FROM agents WHERE agent_id = $1`, a.AgentID,
 					).Scan(&wanIP)
 					triggerAgentOfflineAlert(a.AgentID, a.UserID, a.Name, wanIP, time.Now())
@@ -197,6 +199,42 @@ func SendCommandAndWaitForResponse(agentID string, command models.AgentCommand, 
 	}
 }
 
+// DrainConnections sends a CloseGoingAway close frame to all connected agents,
+// giving them a chance to distinguish planned shutdowns from crashes.
+// It blocks for up to 3 seconds to allow the close frames to be sent.
+func (h *Hub) DrainConnections() {
+	h.mu.RLock()
+	count := len(h.agents)
+	agents := make([]*AgentConnection, 0, count)
+	for _, ac := range h.agents {
+		agents = append(agents, ac)
+	}
+	h.mu.RUnlock()
+
+	if count == 0 {
+		slog.Info("no WebSocket connections to drain", "component", "ws")
+		return
+	}
+
+	slog.Info("draining WebSocket connections", "component", "ws", "count", count)
+
+	deadline := time.Now().Add(3 * time.Second)
+	closeMsg := websocket.FormatCloseMessage(websocket.CloseGoingAway, "server shutting down")
+
+	for _, ac := range agents {
+		if err := ac.Conn.WriteControl(websocket.CloseMessage, closeMsg, deadline); err != nil {
+			slog.Warn("failed to send close frame to agent", "component", "ws", "agent_id", ac.Agent.AgentID, "error", err)
+		}
+	}
+
+	slog.Info("WebSocket drain complete", "component", "ws")
+}
+
+// DrainWebSocketConnections sends close frames to all connected agents during shutdown.
+func DrainWebSocketConnections() {
+	hub.DrainConnections()
+}
+
 // StartHub initializes the WebSocket hub
 func StartHub() {
 	go hub.Run()
@@ -207,7 +245,7 @@ func AgentWebSocket(c *websocket.Conn) {
 	// Get agent from context (set by middleware)
 	agent, ok := c.Locals("agent").(*models.Agent)
 	if !ok || agent == nil {
-		log.Printf("WebSocket connection rejected: invalid agent context")
+		slog.Warn("WebSocket connection rejected: invalid agent context", "component", "ws")
 		return
 	}
 
@@ -230,12 +268,13 @@ func AgentWebSocket(c *websocket.Conn) {
 func (ac *AgentConnection) readPump() {
 	defer func() {
 		hub.unregister <- ac
-		ac.Conn.Close()
+		_ = ac.Conn.Close()
 	}()
 
-	ac.Conn.SetReadDeadline(time.Now().Add(WSPongTimeout))
+	ac.Conn.SetReadLimit(1 * 1024 * 1024) // 1 MB — prevents unbounded memory allocation from oversized messages
+	_ = ac.Conn.SetReadDeadline(time.Now().Add(WSPongTimeout))
 	ac.Conn.SetPongHandler(func(string) error {
-		ac.Conn.SetReadDeadline(time.Now().Add(WSPongTimeout))
+		_ = ac.Conn.SetReadDeadline(time.Now().Add(WSPongTimeout))
 		return nil
 	})
 
@@ -243,7 +282,7 @@ func (ac *AgentConnection) readPump() {
 		_, message, err := ac.Conn.ReadMessage()
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-				log.Printf("WebSocket error: %v", err)
+				slog.Error("unexpected WebSocket close", "component", "ws", "error", err)
 			}
 			break
 		}
@@ -251,7 +290,7 @@ func (ac *AgentConnection) readPump() {
 		// Handle incoming messages from agent
 		var msg map[string]interface{}
 		if err := json.Unmarshal(message, &msg); err != nil {
-			log.Printf("Failed to parse agent message: %v", err)
+			slog.Error("failed to parse agent message", "component", "ws", "error", err)
 			continue
 		}
 
@@ -316,7 +355,7 @@ func (ac *AgentConnection) readPump() {
 					`SELECT COALESCE(wan_ip, '') FROM agents WHERE id = $1`, ac.Agent.ID,
 				).Scan(&currentWanIP)
 				if err == nil && currentWanIP != wanIP {
-					log.Printf("[DDNS] Agent %s WAN IP changed: %s -> %s", ac.Agent.AgentID, currentWanIP, wanIP)
+					slog.Info("agent WAN IP changed", "component", "ddns", "agent_id", ac.Agent.AgentID, "old_ip", currentWanIP, "new_ip", wanIP)
 					go UpdateDDNSForAgent(ac.Agent.ID, ac.Agent.UserID, wanIP)
 				}
 			}
@@ -333,12 +372,12 @@ func (ac *AgentConnection) readPump() {
 			}
 
 			if err := UpdateAgentHeartbeat(ac.Agent.AgentID, status, hostCount, ipAddress, version, os, arch, lanIP, wanIP, csInstalled, nginxVersion); err != nil {
-				log.Printf("Failed to update agent heartbeat: %v", err)
+				slog.Error("failed to update agent heartbeat", "component", "ws", "agent_id", ac.Agent.AgentID, "error", err)
 			}
 
 		case "response":
 			// Handle command response from agent
-			log.Printf("Agent response: %v", msg)
+			slog.Debug("received agent response", "component", "ws", "agent_id", ac.Agent.AgentID)
 
 			// Extract response details
 			payload, ok := msg["payload"].(map[string]interface{})
@@ -379,34 +418,34 @@ func (ac *AgentConnection) readPump() {
 					}
 				}
 			} else {
-				log.Printf("[ws] Late response for %s (no pending entry, likely timed out)", responseKey)
+				slog.Warn("late response received, no pending entry (likely timed out)", "component", "ws", "agent_id", ac.Agent.AgentID, "command_type", commandType)
 			}
 
 		case "metrics_report":
 			// Handle metrics data from agent
-			log.Printf("[metrics] Received metrics_report from agent %s", ac.Agent.AgentID)
+			slog.Debug("received metrics report", "component", "metrics", "agent_id", ac.Agent.AgentID)
 			payload, ok := msg["payload"].(map[string]interface{})
 			if !ok {
-				log.Printf("[metrics] Invalid payload from agent %s", ac.Agent.AgentID)
+				slog.Warn("invalid metrics payload", "component", "metrics", "agent_id", ac.Agent.AgentID)
 				continue
 			}
 
 			bucketsRaw, ok := payload["buckets"]
 			if !ok {
-				log.Printf("[metrics] No buckets field in metrics_report from agent %s", ac.Agent.AgentID)
+				slog.Warn("no buckets field in metrics report", "component", "metrics", "agent_id", ac.Agent.AgentID)
 				continue
 			}
 
 			bucketsJSON, err := json.Marshal(bucketsRaw)
 			if err != nil {
-				log.Printf("Failed to marshal metrics buckets: %v", err)
+				slog.Error("failed to marshal metrics buckets", "component", "metrics", "agent_id", ac.Agent.AgentID, "error", err)
 				continue
 			}
 
 			var buckets []models.IncomingMetricsBucket
 
 			if err := json.Unmarshal(bucketsJSON, &buckets); err != nil {
-				log.Printf("Failed to parse metrics buckets: %v", err)
+				slog.Error("failed to parse metrics buckets", "component", "metrics", "agent_id", ac.Agent.AgentID, "error", err)
 				continue
 			}
 
@@ -416,25 +455,33 @@ func (ac *AgentConnection) readPump() {
 
 			// Batch insert into metrics table
 			if err := InsertMetricsBuckets(ac.Agent.AgentID, buckets); err != nil {
-				log.Printf("Failed to insert metrics: %v", err)
+				slog.Error("failed to insert metrics", "component", "metrics", "agent_id", ac.Agent.AgentID, "error", err)
 			} else {
-				log.Printf("Inserted %d metrics bucket(s) for agent %s", len(buckets), ac.Agent.AgentID)
+				slog.Info("inserted metrics buckets", "component", "metrics", "agent_id", ac.Agent.AgentID, "count", len(buckets))
 			}
 
 			// Insert visitor IP data
 			if err := InsertVisitorIPs(ac.Agent.AgentID, buckets); err != nil {
-				log.Printf("Failed to insert visitor IPs: %v", err)
+				slog.Error("failed to insert visitor IPs", "component", "metrics", "agent_id", ac.Agent.AgentID, "error", err)
 			}
 
-			// Evaluate metric-based alerts
-			go evaluateErrorRateAlerts(ac.Agent.AgentID, ac.Agent.UserID, buckets)
-			go evaluateHighLatencyAlerts(ac.Agent.AgentID, ac.Agent.UserID, buckets)
-			go evaluateTrafficSpikeAlerts(ac.Agent.AgentID, ac.Agent.UserID, buckets)
-			go evaluateHostDownAlerts(ac.Agent.AgentID, ac.Agent.UserID, buckets)
-			go evaluateBandwidthAlerts(ac.Agent.AgentID, ac.Agent.UserID, buckets)
+			// Evaluate metric-based alerts (bounded by alertSem to prevent goroutine explosion)
+			for _, evalFn := range []func(string, int, []models.IncomingMetricsBucket){
+				evaluateErrorRateAlerts,
+				evaluateHighLatencyAlerts,
+				evaluateTrafficSpikeAlerts,
+				evaluateHostDownAlerts,
+				evaluateBandwidthAlerts,
+			} {
+				alertSem <- struct{}{}
+				go func(fn func(string, int, []models.IncomingMetricsBucket)) {
+					defer func() { <-alertSem }()
+					fn(ac.Agent.AgentID, ac.Agent.UserID, buckets)
+				}(evalFn)
+			}
 
 		default:
-			log.Printf("Unknown message type from agent: %s", msgType)
+			slog.Warn("unknown message type from agent", "component", "ws", "agent_id", ac.Agent.AgentID, "type", msgType)
 		}
 	}
 }
@@ -444,15 +491,15 @@ func (ac *AgentConnection) writePump() {
 	ticker := time.NewTicker(WSPingInterval)
 	defer func() {
 		ticker.Stop()
-		ac.Conn.Close()
+		_ = ac.Conn.Close()
 	}()
 
 	for {
 		select {
 		case message, ok := <-ac.Send:
-			ac.Conn.SetWriteDeadline(time.Now().Add(WSWriteDeadline))
+			_ = ac.Conn.SetWriteDeadline(time.Now().Add(WSWriteDeadline))
 			if !ok {
-				ac.Conn.WriteMessage(websocket.CloseMessage, []byte{})
+				_ = ac.Conn.WriteMessage(websocket.CloseMessage, []byte{})
 				return
 			}
 
@@ -461,7 +508,7 @@ func (ac *AgentConnection) writePump() {
 			}
 
 		case <-ticker.C:
-			ac.Conn.SetWriteDeadline(time.Now().Add(WSWriteDeadline))
+			_ = ac.Conn.SetWriteDeadline(time.Now().Add(WSWriteDeadline))
 			if err := ac.Conn.WriteMessage(websocket.PingMessage, nil); err != nil {
 				return
 			}

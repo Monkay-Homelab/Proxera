@@ -3,7 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
-	"log"
+	"log/slog"
 	"sort"
 	"time"
 
@@ -12,6 +12,8 @@ import (
 	"github.com/proxera/backend/internal/models"
 	"github.com/proxera/backend/internal/notifications"
 )
+
+var lastAlertCleanup time.Time
 
 // StartAlertWorker runs periodic alert checks every 5 minutes.
 func StartAlertWorker() {
@@ -32,6 +34,25 @@ func runAlertChecks() {
 	checkStaleAgents()
 	checkCertExpiryAlerts()
 	checkCrowdSecBans()
+	cleanupOldAlerts()
+}
+
+// cleanupOldAlerts deletes resolved alert_history rows older than 365 days.
+// It runs at most once per day to avoid unnecessary database load.
+func cleanupOldAlerts() {
+	if time.Since(lastAlertCleanup) < 24*time.Hour {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	result, err := database.DB.Exec(ctx,
+		"DELETE FROM alert_history WHERE status = 'resolved' AND resolved_at < NOW() - INTERVAL '365 days'")
+	if err != nil {
+		slog.Error("failed to cleanup old alerts", "component", "alerts", "error", err)
+		return
+	}
+	slog.Info("cleaned up old resolved alerts", "component", "alerts", "deleted", result.RowsAffected())
+	lastAlertCleanup = time.Now()
 }
 
 // checkStaleAgents detects agents that went offline without a clean disconnect.
@@ -46,7 +67,7 @@ func checkStaleAgents() {
 		  AND a.status != 'offline'
 	`)
 	if err != nil {
-		log.Printf("[AlertWorker] Failed to query stale agents: %v", err)
+		slog.Error("failed to query stale agents", "component", "alerts", "error", err)
 		return
 	}
 	defer rows.Close()
@@ -61,7 +82,7 @@ func checkStaleAgents() {
 		}
 
 		// Mark agent offline
-		UpdateAgentStatus(agentID, "offline")
+		_ = UpdateAgentStatus(agentID, "offline")
 
 		// Trigger alert
 		triggerAgentOfflineAlert(agentID, userID, agentName, wanIP, lastSeen)
@@ -79,7 +100,7 @@ func triggerAgentOfflineAlert(agentID string, userID int, agentName, wanIP strin
 		WHERE user_id = $1 AND alert_type = 'agent_offline' AND enabled = true
 	`, userID)
 	if err != nil {
-		log.Printf("[AlertWorker] Failed to query agent_offline rules for user %d: %v", userID, err)
+		slog.Error("failed to query agent_offline rules", "component", "alerts", "alert_type", "agent_offline", "user_id", userID, "error", err)
 		return
 	}
 	defer rows.Close()
@@ -95,7 +116,7 @@ func triggerAgentOfflineAlert(agentID string, userID int, agentName, wanIP strin
 		var config struct {
 			AgentIDs []string `json:"agent_ids"`
 		}
-		json.Unmarshal(configRaw, &config)
+		_ = json.Unmarshal(configRaw, &config) // best-effort parse; skip rule if malformed
 
 		matched := false
 		for _, id := range config.AgentIDs {
@@ -134,7 +155,7 @@ func checkCertExpiryAlerts() {
 		ORDER BY c.user_id
 	`)
 	if err != nil {
-		log.Printf("[AlertWorker] Failed to query certs for expiry alerts: %v", err)
+		slog.Error("failed to query certs for expiry alerts", "component", "alerts", "alert_type", "cert_expiry", "error", err)
 		return
 	}
 	defer rows.Close()
@@ -169,7 +190,7 @@ func checkCertExpiryAlerts() {
 			var config struct {
 				WarnDays []int `json:"warn_days"`
 			}
-			json.Unmarshal(configRaw, &config)
+			_ = json.Unmarshal(configRaw, &config) // best-effort parse; skip rule if malformed
 			if len(config.WarnDays) == 0 {
 				config.WarnDays = []int{30, 7, 1}
 			}
@@ -199,7 +220,7 @@ func triggerCertRenewalFailedAlert(userID int, certID int, domain string, expire
 		WHERE user_id = $1 AND alert_type = 'cert_renewal_failed' AND enabled = true
 	`, userID)
 	if err != nil {
-		log.Printf("[AlertWorker] Failed to query cert_renewal_failed rules for user %d: %v", userID, err)
+		slog.Error("failed to query cert_renewal_failed rules", "component", "alerts", "alert_type", "cert_renewal_failed", "user_id", userID, "error", err)
 		return
 	}
 	defer rows.Close()
@@ -242,7 +263,7 @@ func evaluateHighLatencyAlerts(agentID string, userID int, buckets []models.Inco
 			Domains       []string `json:"domains"`
 			WindowMinutes int      `json:"window_minutes"`
 		}
-		json.Unmarshal(configRaw, &config)
+		_ = json.Unmarshal(configRaw, &config) // best-effort parse; skip rule if malformed
 		if config.ThresholdMs <= 0 {
 			config.ThresholdMs = 500
 		}
@@ -289,7 +310,7 @@ func evaluateHighLatencyAlerts(agentID string, userID int, buckets []models.Inco
 			// For window > 1 minute, query DB for average P95
 			if config.WindowMinutes > 1 {
 				var dbP95 float64
-				database.DB.QueryRow(ctx, `
+				_ = database.DB.QueryRow(ctx, `
 					SELECT COALESCE(AVG(latency_p95_ms), 0)
 					FROM metrics
 					WHERE agent_id = $1 AND domain = $2 AND time > NOW() - ($3 || ' minutes')::interval
@@ -336,7 +357,7 @@ func evaluateTrafficSpikeAlerts(agentID string, userID int, buckets []models.Inc
 			BaselineMinutes int      `json:"baseline_minutes"`
 			Domains         []string `json:"domains"`
 		}
-		json.Unmarshal(configRaw, &config)
+		_ = json.Unmarshal(configRaw, &config) // best-effort parse; skip rule if malformed
 		if config.Multiplier <= 0 {
 			config.Multiplier = 3.0
 		}
@@ -366,7 +387,7 @@ func evaluateTrafficSpikeAlerts(agentID string, userID int, buckets []models.Inc
 		for domain, currentCount := range domainCounts {
 			// Query baseline average request count per minute
 			var baselineAvg float64
-			database.DB.QueryRow(ctx, `
+			_ = database.DB.QueryRow(ctx, `
 				SELECT COALESCE(AVG(request_count), 0)
 				FROM metrics
 				WHERE agent_id = $1 AND domain = $2 AND time > NOW() - ($3 || ' minutes')::interval
@@ -416,7 +437,7 @@ func evaluateHostDownAlerts(agentID string, userID int, buckets []models.Incomin
 			Domains       []string `json:"domains"`
 			WindowMinutes int      `json:"window_minutes"`
 		}
-		json.Unmarshal(configRaw, &config)
+		_ = json.Unmarshal(configRaw, &config) // best-effort parse; skip rule if malformed
 		if config.WindowMinutes <= 0 {
 			config.WindowMinutes = 1
 		}
@@ -454,7 +475,7 @@ func evaluateHostDownAlerts(agentID string, userID int, buckets []models.Incomin
 			// For window > 1 minute, add historical data
 			if config.WindowMinutes > 1 {
 				var db5xx, dbTotal int64
-				database.DB.QueryRow(ctx, `
+				_ = database.DB.QueryRow(ctx, `
 					SELECT COALESCE(SUM(status_5xx), 0), COALESCE(SUM(request_count), 0)
 					FROM metrics
 					WHERE agent_id = $1 AND domain = $2 AND time > NOW() - ($3 || ' minutes')::interval
@@ -506,7 +527,7 @@ func evaluateBandwidthAlerts(agentID string, userID int, buckets []models.Incomi
 			PeriodHours int      `json:"period_hours"`
 			Domains     []string `json:"domains"`
 		}
-		json.Unmarshal(configRaw, &config)
+		_ = json.Unmarshal(configRaw, &config) // best-effort parse; skip rule if malformed
 		if config.ThresholdGB <= 0 {
 			config.ThresholdGB = 10.0
 		}
@@ -534,7 +555,7 @@ func evaluateBandwidthAlerts(agentID string, userID int, buckets []models.Incomi
 
 		for domain := range matchedDomains {
 			var bytesUsed int64
-			database.DB.QueryRow(ctx, `
+			_ = database.DB.QueryRow(ctx, `
 				SELECT COALESCE(SUM(bytes_sent + bytes_received), 0)
 				FROM metrics
 				WHERE agent_id = $1 AND domain = $2 AND time > NOW() - ($3 || ' hours')::interval
@@ -560,7 +581,7 @@ func checkCrowdSecBans() {
 		SELECT agent_id, user_id, name FROM agents WHERE crowdsec_installed = true
 	`)
 	if err != nil {
-		log.Printf("[AlertWorker] Failed to query CrowdSec agents: %v", err)
+		slog.Error("failed to query CrowdSec agents", "component", "alerts", "alert_type", "crowdsec_ban", "error", err)
 		return
 	}
 	defer rows.Close()
@@ -660,7 +681,7 @@ func triggerCrowdSecBanAlert(agentID string, userID int, agentName string, csAle
 			AgentIDs  []string `json:"agent_ids"`
 			MinEvents int      `json:"min_events"`
 		}
-		json.Unmarshal(configRaw, &config)
+		_ = json.Unmarshal(configRaw, &config) // best-effort parse; skip rule if malformed
 		if config.MinEvents <= 0 {
 			config.MinEvents = 1
 		}
@@ -718,7 +739,7 @@ func evaluateErrorRateAlerts(agentID string, userID int, buckets []models.Incomi
 			WindowMinutes int      `json:"window_minutes"`
 			MinRequests   int64    `json:"min_requests"`
 		}
-		json.Unmarshal(configRaw, &config)
+		_ = json.Unmarshal(configRaw, &config) // best-effort parse; skip rule if malformed
 		if config.ThresholdPct <= 0 {
 			config.ThresholdPct = 5.0
 		}
@@ -768,7 +789,7 @@ func evaluateErrorRateAlerts(agentID string, userID int, buckets []models.Incomi
 			// For window > 1 minute, query DB for historical data
 			if config.WindowMinutes > 1 {
 				var dbErrors, dbTotal int64
-				database.DB.QueryRow(ctx, `
+				_ = database.DB.QueryRow(ctx, `
 					SELECT COALESCE(SUM(status_5xx), 0), COALESCE(SUM(request_count), 0)
 					FROM metrics
 					WHERE agent_id = $1 AND domain = $2 AND time > NOW() - ($3 || ' minutes')::interval

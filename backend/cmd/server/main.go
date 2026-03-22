@@ -44,9 +44,6 @@ func main() {
 		log.Fatal("Failed to initialize database:", err)
 	}
 
-	// Migrate existing plaintext API keys to hashed
-	handlers.MigrateAPIKeyHashes()
-
 	// Start WebSocket hub for agent connections
 	handlers.StartHub()
 

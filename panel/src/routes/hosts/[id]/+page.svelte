@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
 	import { onMount } from 'svelte';
 	import { page } from '$app/stores';
 	import { goto } from '$app/navigation';
@@ -6,14 +6,15 @@
 	import { navRefresh } from '$lib/navRefresh';
 	import { toastError } from '$lib/components/toast';
 	import { confirmDialog } from '$lib/components/confirm';
+	import type { HostConfig, DnsProvider, Agent } from '$lib/types';
 
 	let parentDomain = '';
-	let configs = [];
+	let configs: HostConfig[] = [];
 	let loading = true;
 	let error = '';
 
 	// Agent state
-	let agents = [];
+	let agents: Agent[] = [];
 	let agentsLoaded = false;
 
 	const providerId = $page.params.id;
@@ -23,7 +24,7 @@
 			const res = await api('/api/dns/providers');
 			if (res.ok) {
 				const providers = await res.json();
-				const match = providers.find(p => p.id === parseInt(providerId));
+				const match = providers.find((p: DnsProvider) => p.id === parseInt(providerId ?? ''));
 				if (match) {
 					parentDomain = match.domain;
 				}
@@ -56,7 +57,7 @@
 		try {
 			const res = await api(`/api/hosts/${providerId}/configs`);
 			if (res.ok) {
-				configs = (await res.json()).sort((a, b) => {
+				configs = (await res.json()).sort((a: HostConfig, b: HostConfig) => {
 					if (a.domain === parentDomain) return -1;
 					if (b.domain === parentDomain) return 1;
 					return a.domain.localeCompare(b.domain);
@@ -72,7 +73,7 @@
 		}
 	}
 
-	function hasAdvancedConfig(config) {
+	function hasAdvancedConfig(config: HostConfig) {
 		return config.config && Object.keys(config.config).length > 0;
 	}
 
@@ -80,7 +81,7 @@
 	let sortKey = 'domain';
 	let sortDir = 1; // 1 = asc, -1 = desc
 
-	function toggleSort(key) {
+	function toggleSort(key: string) {
 		if (sortKey === key) {
 			sortDir = -sortDir;
 		} else {
@@ -89,9 +90,9 @@
 		}
 	}
 
-	function getAgentName(config) {
+	function getAgentName(config: HostConfig) {
 		if (!config.agent_id) return '';
-		const agent = agents.find(a => a.id === config.agent_id);
+		const agent = agents.find(a => String(a.id) === String(config.agent_id));
 		return agent ? agent.name : 'Unknown';
 	}
 
@@ -118,7 +119,7 @@
 		}
 	});
 
-	async function deleteConfig(config) {
+	async function deleteConfig(config: HostConfig) {
 		if (!await confirmDialog(`Delete host config "${config.domain}"?`, { title: 'Delete Host Config', confirmLabel: 'Delete', danger: true })) return;
 
 		try {
@@ -215,7 +216,7 @@
 								</td>
 								<td>
 									{#if config.agent_id}
-										{@const agent = agents.find(a => a.id === config.agent_id)}
+										{@const agent = agents.find(a => String(a.id) === String(config.agent_id))}
 										{#if agent}
 											<span class="agent-pill" class:agent-online={agent.status === 'online'}>
 												{agent.name}

@@ -6,7 +6,7 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -36,7 +36,7 @@ func ExportMetrics(c *fiber.Ctx) error {
 
 	agentRows, err := database.DB.Query(context.Background(), agentQuery, agentArgs...)
 	if err != nil {
-		log.Printf("[export] Failed to query agents: %v", err)
+		slog.Error("failed to query agents", "component", "metrics", "error", err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to query agents"})
 	}
 	defer agentRows.Close()
@@ -55,7 +55,7 @@ func ExportMetrics(c *fiber.Ctx) error {
 		}
 	}
 	if err := agentRows.Err(); err != nil {
-		log.Printf("[export] Error iterating agents: %v", err)
+		slog.Error("error iterating agents", "component", "metrics", "error", err)
 	}
 
 	// Optionally filter to a single agent
@@ -86,7 +86,7 @@ func ExportMetrics(c *fiber.Ctx) error {
 	rc := parseRange(rangeParam)
 	buckets, summary, _, err := queryMetrics(queryAgentIDs, rc, domain)
 	if err != nil {
-		log.Printf("[export] Failed to query metrics: %v", err)
+		slog.Error("failed to query metrics", "component", "metrics", "error", err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to query metrics"})
 	}
 
@@ -136,7 +136,7 @@ func ExportMetrics(c *fiber.Ctx) error {
 	w := csv.NewWriter(&buf)
 
 	// Header row
-	w.Write([]string{
+	_ = w.Write([]string{
 		"time", "domain",
 		"request_count", "bytes_sent", "bytes_received",
 		"status_2xx", "status_3xx", "status_4xx", "status_5xx",
@@ -146,7 +146,7 @@ func ExportMetrics(c *fiber.Ctx) error {
 	})
 
 	for _, b := range buckets {
-		w.Write([]string{
+		_ = w.Write([]string{
 			b.Time.UTC().Format(time.RFC3339),
 			b.Domain,
 			fmt.Sprintf("%d", b.RequestCount),

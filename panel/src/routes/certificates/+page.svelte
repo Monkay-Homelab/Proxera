@@ -1,19 +1,33 @@
-<script>
+<script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
 	import { api } from '$lib/api';
 	import { toastError, toastSuccess } from '$lib/components/toast';
 	import { confirmDialog } from '$lib/components/confirm';
 	import { formatDate, copyToClipboard } from '$lib/utils';
+	import type { DnsProvider } from '$lib/types';
 
-	let certificates = [];
-	let providers = [];
+	interface CertificateRecord {
+		id: number;
+		domain: string;
+		san: string;
+		status: string;
+		issued_at: string;
+		expires_at: string;
+		certificate_pem?: string;
+		private_key_pem?: string;
+		issuer_pem?: string;
+		provider_id: number;
+	}
+
+	let certificates: CertificateRecord[] = [];
+	let providers: DnsProvider[] = [];
 	let loading = true;
 	let showIssueModal = false;
 	let showViewModal = false;
-	let viewCert = null;
+	let viewCert: CertificateRecord | null = null;
 	let error = '';
 	let privateKeyRevealed = false;
-	let pollTimer = null;
+	let pollTimer: ReturnType<typeof setInterval> | null = null;
 
 	// Issue form
 	let selectedProviderId = '';
@@ -30,7 +44,7 @@
 		try {
 			const response = await api('/api/certificates');
 			if (response.ok) {
-				certificates = (await response.json()).sort((a, b) => (a.domain || '').localeCompare(b.domain || ''));
+				certificates = (await response.json()).sort((a: CertificateRecord, b: CertificateRecord) => (a.domain || '').localeCompare(b.domain || ''));
 				if (certificates.some(c => c.status === 'pending')) {
 					startPolling();
 				}
@@ -81,7 +95,7 @@
 			try {
 				const response = await api('/api/certificates');
 				if (response.ok) {
-					const updated = (await response.json()).sort((a, b) => (a.domain || '').localeCompare(b.domain || ''));
+					const updated: CertificateRecord[] = (await response.json()).sort((a: CertificateRecord, b: CertificateRecord) => (a.domain || '').localeCompare(b.domain || ''));
 					// Check for status changes to notify user
 					for (const cert of updated) {
 						const old = certificates.find(c => c.id === cert.id);
@@ -110,7 +124,7 @@
 		const provider = getSelectedProvider();
 		if (!provider || !selectedProviderId) return;
 
-		let domains = [];
+		let domains: string[] = [];
 		const providerDomain = provider.domain;
 
 		if (domainInput.trim()) {
@@ -148,16 +162,16 @@
 				throw new Error(data.message || data.error || 'Failed to issue certificate');
 			}
 
-			const pendingCert = await response.json();
-			certificates = [...certificates, pendingCert].sort((a, b) => (a.domain || '').localeCompare(b.domain || ''));
+			const pendingCert: CertificateRecord = await response.json();
+			certificates = [...certificates, pendingCert].sort((a: CertificateRecord, b: CertificateRecord) => (a.domain || '').localeCompare(b.domain || ''));
 			closeIssueModal();
 			startPolling();
 		} catch (err) {
-			error = err.message;
+			error = err instanceof Error ? err.message : String(err);
 		}
 	}
 
-	async function retryCertificate(certId) {
+	async function retryCertificate(certId: number) {
 		try {
 			const response = await api(`/api/certificates/${certId}/retry`, { method: 'POST' });
 			if (!response.ok) {
@@ -170,11 +184,11 @@
 			);
 			startPolling();
 		} catch (err) {
-			toastError(err.message);
+			toastError(err instanceof Error ? err.message : String(err));
 		}
 	}
 
-	async function viewCertificate(cert) {
+	async function viewCertificate(cert: CertificateRecord) {
 		try {
 			const response = await api(`/api/certificates/${cert.id}`);
 			if (response.ok) {
@@ -193,6 +207,7 @@
 	}
 
 	async function revealPrivateKey() {
+		if (!viewCert) return;
 		try {
 			const response = await api(`/api/certificates/${viewCert.id}?include_key=true`);
 			if (response.ok) {
@@ -205,7 +220,7 @@
 		}
 	}
 
-	async function deleteCertificate(id) {
+	async function deleteCertificate(id: number) {
 		if (!await confirmDialog('Are you sure you want to delete this certificate?', { title: 'Delete Certificate', confirmLabel: 'Delete', danger: true })) return;
 
 		try {
@@ -218,7 +233,7 @@
 		}
 	}
 
-	function statusClass(status) {
+	function statusClass(status: string) {
 		switch (status) {
 			case 'active': return 'badge-ok';
 			case 'pending': return 'badge-warn';
@@ -343,7 +358,7 @@
 						autocomplete="off"
 					/>
 					{#if getSelectedProvider()}
-						<span class="domain-suffix">.{getSelectedProvider().domain}</span>
+						<span class="domain-suffix">.{getSelectedProvider()?.domain}</span>
 					{/if}
 				</div>
 				<span class="form-hint">Leave empty to issue for the root domain only.</span>
@@ -437,7 +452,7 @@
 				<div class="pem-section">
 					<div class="pem-head">
 						<h3>Certificate (PEM)</h3>
-						<button class="btn-ghost" onclick={() => copyToClipboard(viewCert.certificate_pem)}>Copy</button>
+						<button class="btn-ghost" onclick={() => copyToClipboard(viewCert?.certificate_pem ?? '')}>Copy</button>
 					</div>
 					<pre class="pem-content">{viewCert.certificate_pem}</pre>
 				</div>
@@ -447,7 +462,7 @@
 				<div class="pem-head">
 					<h3>Private Key (PEM)</h3>
 					{#if privateKeyRevealed && viewCert.private_key_pem}
-						<button class="btn-ghost" onclick={() => copyToClipboard(viewCert.private_key_pem)}>Copy</button>
+						<button class="btn-ghost" onclick={() => copyToClipboard(viewCert?.private_key_pem ?? '')}>Copy</button>
 					{/if}
 				</div>
 				{#if privateKeyRevealed && viewCert.private_key_pem}
@@ -464,7 +479,7 @@
 				<div class="pem-section">
 					<div class="pem-head">
 						<h3>Issuer Certificate (PEM)</h3>
-						<button class="btn-ghost" onclick={() => copyToClipboard(viewCert.issuer_pem)}>Copy</button>
+						<button class="btn-ghost" onclick={() => copyToClipboard(viewCert?.issuer_pem ?? '')}>Copy</button>
 					</div>
 					<pre class="pem-content">{viewCert.issuer_pem}</pre>
 				</div>

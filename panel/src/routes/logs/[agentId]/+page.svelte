@@ -1,19 +1,19 @@
-<script>
+<script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/stores';
 	import { api } from '$lib/api';
 	import { createFetchGroup } from '$lib/fetchGroup';
 
-	const agentId = $page.params.agentId;
+	const agentId = $page.params.agentId as string;
 	const fetchGroup = createFetchGroup();
-	let agent = null;
+	let agent: { name: string; agent_id: string; status: string; last_seen?: string; wan_ip?: string; ip_address?: string } | null = null;
 	let logs = '';
 	let loading = true;
 	let logsLoading = false;
-	let error = null;
+	let error: string | null = null;
 	let autoRefresh = false;
-	let refreshInterval = null;
+	let refreshInterval: ReturnType<typeof setInterval> | null = null;
 	let lineCount = 200;
 
 	// Filters
@@ -26,16 +26,28 @@
 	const statusFilters = ['all', '2xx', '3xx', '4xx', '5xx'];
 	const methodFilters = ['all', 'GET', 'POST', 'PUT', 'PATCH', 'DELETE'];
 
+	interface ParsedLine {
+		raw: string;
+		ip: string;
+		time: string;
+		method: string;
+		path: string;
+		status: number;
+		size: number;
+		referer: string;
+		ua: string;
+	}
+
 	// Parse a combined-format log line
-	function parseLine(line) {
+	function parseLine(line: string): ParsedLine | null {
 		const m = line.match(/^(\S+)\s+\S+\s+\S+\s+\[([^\]]+)\]\s+"(\S+)\s+(\S+)\s+\S+"\s+(\d{3})\s+(\d+)\s+"([^"]*)"\s+"([^"]*)"/);
 		if (!m) return null;
 		return { raw: line, ip: m[1], time: m[2], method: m[3], path: m[4], status: parseInt(m[5]), size: parseInt(m[6]), referer: m[7], ua: m[8] };
 	}
 
-	$: parsedLines = logs ? logs.split('\n').filter(l => l.trim()).map(parseLine).filter(Boolean) : [];
+	$: parsedLines = logs ? logs.split('\n').filter((l: string) => l.trim()).map(parseLine).filter((l): l is ParsedLine => l !== null) : [];
 
-	$: filteredLines = parsedLines.filter(l => {
+	$: filteredLines = parsedLines.filter((l: ParsedLine) => {
 		if (statusFilter !== 'all') {
 			const prefix = parseInt(statusFilter[0]);
 			if (Math.floor(l.status / 100) !== prefix) return false;
@@ -49,14 +61,14 @@
 		return true;
 	});
 
-	$: uniqueIPs = [...new Set(parsedLines.map(l => l.ip))].sort();
+	$: uniqueIPs = [...new Set(parsedLines.map((l: ParsedLine) => l.ip))].sort();
 	$: filterStats = {
 		total: parsedLines.length,
 		shown: filteredLines.length,
-		s2xx: parsedLines.filter(l => l.status >= 200 && l.status < 300).length,
-		s3xx: parsedLines.filter(l => l.status >= 300 && l.status < 400).length,
-		s4xx: parsedLines.filter(l => l.status >= 400 && l.status < 500).length,
-		s5xx: parsedLines.filter(l => l.status >= 500).length,
+		s2xx: parsedLines.filter((l: ParsedLine) => l.status >= 200 && l.status < 300).length,
+		s3xx: parsedLines.filter((l: ParsedLine) => l.status >= 300 && l.status < 400).length,
+		s4xx: parsedLines.filter((l: ParsedLine) => l.status >= 400 && l.status < 500).length,
+		s5xx: parsedLines.filter((l: ParsedLine) => l.status >= 500).length,
 	};
 
 	function startInterval() {
@@ -97,7 +109,7 @@
 			const resp = await api(`/api/agents/${agentId}`);
 			if (!resp.ok) throw new Error('Agent not found');
 			agent = await resp.json();
-		} catch (err) { error = err.message; }
+		} catch (err) { error = err instanceof Error ? err.message : String(err); }
 		finally { loading = false; }
 	}
 
@@ -113,11 +125,11 @@
 			logs = data.logs || '';
 		} catch (err) {
 			if (fetchGroup.isAborted(err)) return;
-			error = err.message;
+			error = err instanceof Error ? err.message : String(err);
 		} finally { logsLoading = false; }
 	}
 
-	function changeLineCount(n) {
+	function changeLineCount(n: number) {
 		lineCount = n;
 		fetchLogs();
 	}
@@ -144,7 +156,7 @@
 		if (el) el.scrollTop = 0;
 	}
 
-	function statusClass(code) {
+	function statusClass(code: number) {
 		if (code >= 500) return 'st-5xx';
 		if (code >= 400) return 'st-4xx';
 		if (code >= 300) return 'st-3xx';

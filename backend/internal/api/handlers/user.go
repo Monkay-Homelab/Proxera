@@ -14,9 +14,9 @@ func GetNavContext(c *fiber.Ctx) error {
 	userID, _ := c.Locals("user_id").(int)
 	ctx := context.Background()
 	var agentCount, dnsZoneCount, hostCount int
-	database.DB.QueryRow(ctx, "SELECT COUNT(*) FROM agents WHERE user_id = $1", userID).Scan(&agentCount)
-	database.DB.QueryRow(ctx, "SELECT COUNT(*) FROM dns_providers WHERE user_id = $1", userID).Scan(&dnsZoneCount)
-	database.DB.QueryRow(ctx, "SELECT COUNT(*) FROM hosts WHERE user_id = $1", userID).Scan(&hostCount)
+	_ = database.DB.QueryRow(ctx, "SELECT COUNT(*) FROM agents WHERE user_id = $1", userID).Scan(&agentCount)
+	_ = database.DB.QueryRow(ctx, "SELECT COUNT(*) FROM dns_providers WHERE user_id = $1", userID).Scan(&dnsZoneCount)
+	_ = database.DB.QueryRow(ctx, "SELECT COUNT(*) FROM hosts WHERE user_id = $1", userID).Scan(&hostCount)
 	return c.JSON(fiber.Map{
 		"agent_count":    agentCount,
 		"dns_zone_count": dnsZoneCount,

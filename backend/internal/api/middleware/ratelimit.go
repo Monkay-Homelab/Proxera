@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"log/slog"
 	"strconv"
 	"sync"
 	"time"
@@ -19,8 +20,19 @@ var (
 )
 
 func init() {
-	// Prune expired windows every 10 minutes
+	startCleanup()
+}
+
+func startCleanup() {
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("rate limiter cleanup goroutine panicked, restarting in 5s",
+					"component", "ratelimit", "panic", r)
+				time.Sleep(5 * time.Second)
+				startCleanup()
+			}
+		}()
 		for {
 			time.Sleep(10 * time.Minute)
 			windowsMu.Lock()

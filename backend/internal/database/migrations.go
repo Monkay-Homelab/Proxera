@@ -3,9 +3,11 @@ package database
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
+	"os"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/proxera/backend/internal/crypto"
 )
 
 // Migration represents a single database migration with a numeric ID and a
@@ -25,6 +27,26 @@ var migrations = []Migration{
 		ID:   1,
 		Name: "initial_schema",
 		Fn:   migration001InitialSchema,
+	},
+	{
+		ID:   2,
+		Name: "hash_password_reset_tokens",
+		Fn:   migration002HashPasswordResetTokens,
+	},
+	{
+		ID:   3,
+		Name: "encrypt_smtp_password",
+		Fn:   migration003EncryptSMTPPassword,
+	},
+	{
+		ID:   4,
+		Name: "add_missing_indexes",
+		Fn:   migration004AddMissingIndexes,
+	},
+	{
+		ID:   5,
+		Name: "remove_agent_plaintext_api_key",
+		Fn:   migration005RemoveAgentPlaintextAPIKey,
 	},
 }
 
@@ -58,7 +80,7 @@ func RunMigrations() error {
 			continue
 		}
 
-		log.Printf("Applying migration %03d_%s ...", m.ID, m.Name)
+		slog.Info("Applying migration", "component", "db", "migration_id", m.ID, "migration_name", m.Name)
 
 		tx, err := DB.Begin(ctx)
 		if err != nil {
@@ -83,7 +105,7 @@ func RunMigrations() error {
 			return fmt.Errorf("failed to commit migration %d: %w", m.ID, err)
 		}
 
-		log.Printf("Migration %03d_%s applied successfully", m.ID, m.Name)
+		slog.Info("Migration applied successfully", "component", "db", "migration_id", m.ID, "migration_name", m.Name)
 	}
 
 	return nil
@@ -114,7 +136,7 @@ func migration001InitialSchema(tx pgx.Tx) error {
 			user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
 			agent_id VARCHAR(255) UNIQUE NOT NULL,
 			name VARCHAR(255) NOT NULL,
-			api_key VARCHAR(255) UNIQUE NOT NULL,
+			api_key VARCHAR(255) UNIQUE NOT NULL, -- Removed in migration 005
 			status VARCHAR(50) DEFAULT 'offline',
 			version VARCHAR(50),
 			os VARCHAR(50),
@@ -128,7 +150,7 @@ func migration001InitialSchema(tx pgx.Tx) error {
 
 		CREATE INDEX IF NOT EXISTS idx_agents_user_id ON agents(user_id);
 		CREATE INDEX IF NOT EXISTS idx_agents_agent_id ON agents(agent_id);
-		CREATE INDEX IF NOT EXISTS idx_agents_api_key ON agents(api_key);
+		CREATE INDEX IF NOT EXISTS idx_agents_api_key ON agents(api_key); -- Removed in migration 005
 
 		-- Add LAN and WAN IP columns if they don't exist
 		ALTER TABLE agents ADD COLUMN IF NOT EXISTS lan_ip VARCHAR(50);
@@ -438,6 +460,140 @@ func migration001InitialSchema(tx pgx.Tx) error {
 	`
 	if _, err := tx.Exec(ctx, migrateVisitorIPs); err != nil {
 		return fmt.Errorf("visitor_ips hypertable migration failed: %w", err)
+	}
+
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Migration 002 — Truncate plaintext password reset tokens
+// ---------------------------------------------------------------------------
+//
+// Password reset tokens were previously stored as plaintext. New code stores
+// SHA-256 hashes instead. Existing plaintext rows cannot be retroactively
+// hashed (we would need the original token to produce the hash, but the
+// plaintext IS the stored value). Truncating is safe because tokens have a
+// 1-hour expiry and are single-use; any active tokens simply require
+// re-generation by an admin.
+
+func migration002HashPasswordResetTokens(tx pgx.Tx) error {
+	ctx := context.Background()
+	_, err := tx.Exec(ctx, `TRUNCATE password_reset_tokens`)
+	if err != nil {
+		return fmt.Errorf("truncate password_reset_tokens failed: %w", err)
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Migration 003 — Encrypt existing plaintext SMTP_PASSWORD in system_settings
+// ---------------------------------------------------------------------------
+//
+// If ENCRYPTION_KEY is not set, the migration logs a warning and succeeds
+// without modifying data (the application can still function with plaintext
+// passwords, and a future restart with the key set will retry via a fresh
+// migration entry — but since migration 003 will already be recorded, an
+// operator who adds ENCRYPTION_KEY later should use the Admin Settings UI to
+// re-save the SMTP password, which will encrypt it on write).
+
+func migration003EncryptSMTPPassword(tx pgx.Tx) error {
+	ctx := context.Background()
+
+	// Check whether ENCRYPTION_KEY is available before attempting encryption.
+	if os.Getenv("ENCRYPTION_KEY") == "" {
+		slog.Warn("ENCRYPTION_KEY not set, skipping SMTP_PASSWORD encryption migration. Set ENCRYPTION_KEY and re-save the SMTP password in Admin > Settings to encrypt it.", "component", "db", "migration_id", 3, "migration_name", "encrypt_smtp_password")
+		return nil
+	}
+
+	// Read the current SMTP_PASSWORD from system_settings.
+	var currentValue string
+	err := tx.QueryRow(ctx,
+		`SELECT value FROM system_settings WHERE key = 'SMTP_PASSWORD'`,
+	).Scan(&currentValue)
+
+	if err != nil {
+		// No SMTP_PASSWORD row exists — nothing to migrate.
+		slog.Info("No SMTP_PASSWORD found in system_settings, skipping encryption migration", "component", "db", "migration_id", 3, "migration_name", "encrypt_smtp_password")
+		return nil
+	}
+
+	if currentValue == "" {
+		// Empty value — nothing to encrypt.
+		return nil
+	}
+
+	// Check if the value is already encrypted by attempting to decrypt it.
+	if _, decryptErr := crypto.Decrypt(currentValue); decryptErr == nil {
+		slog.Info("SMTP_PASSWORD is already encrypted, skipping migration", "component", "db", "migration_id", 3, "migration_name", "encrypt_smtp_password")
+		return nil
+	}
+
+	// Value is plaintext — encrypt it.
+	encrypted, err := crypto.Encrypt(currentValue)
+	if err != nil {
+		return fmt.Errorf("failed to encrypt SMTP_PASSWORD: %w", err)
+	}
+
+	_, err = tx.Exec(ctx,
+		`UPDATE system_settings SET value = $1, updated_at = NOW() WHERE key = 'SMTP_PASSWORD'`,
+		encrypted,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to update SMTP_PASSWORD with encrypted value: %w", err)
+	}
+
+	slog.Info("SMTP_PASSWORD encrypted successfully", "component", "db", "migration_id", 3, "migration_name", "encrypt_smtp_password")
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Migration 004 — Add missing database indexes
+// ---------------------------------------------------------------------------
+//
+// Adds a partial index on certificates.expires_at for efficient renewal
+// lookups (only rows that have a certificate and are not in error state),
+// and a GIN index on alert_history.metadata for JSONB queries.
+
+func migration004AddMissingIndexes(tx pgx.Tx) error {
+	ctx := context.Background()
+
+	query := `
+		CREATE INDEX IF NOT EXISTS idx_certificates_expires_at
+			ON certificates(expires_at)
+			WHERE expires_at IS NOT NULL AND certificate_pem IS NOT NULL AND status != 'error';
+
+		CREATE INDEX IF NOT EXISTS idx_alert_history_metadata
+			ON alert_history USING GIN (metadata);
+	`
+
+	_, err := tx.Exec(ctx, query)
+	if err != nil {
+		return fmt.Errorf("add missing indexes failed: %w", err)
+	}
+
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Migration 005 — Remove plaintext agent API key column
+// ---------------------------------------------------------------------------
+//
+// The agents.api_key column stored plaintext API keys and was superseded by
+// api_key_hash (SHA-256). All existing deployments have already migrated keys
+// to hashes and blanked the plaintext column. The column and its index serve
+// no purpose and are dropped here.
+
+func migration005RemoveAgentPlaintextAPIKey(tx pgx.Tx) error {
+	ctx := context.Background()
+
+	query := `
+		DROP INDEX IF EXISTS idx_agents_api_key;
+		ALTER TABLE agents DROP COLUMN IF EXISTS api_key;
+	`
+
+	_, err := tx.Exec(ctx, query)
+	if err != nil {
+		return fmt.Errorf("remove agent plaintext api_key column failed: %w", err)
 	}
 
 	return nil

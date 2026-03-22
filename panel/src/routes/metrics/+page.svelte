@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
 	import { api } from '$lib/api';
 	import { createFetchGroup } from '$lib/fetchGroup';
@@ -8,28 +8,28 @@
 	import WorldMap from '$lib/components/WorldMap.svelte';
 
 	let loading = true;
-	let error = null;
-	let metricsData = null;
+	let error: string | null = null;
+	let metricsData: any = null;
 	let renderKey = 0;
 	let selectedRange = '24h';
 	let selectedAgent = '';
 	let selectedDomain = '';
-	let availableDomains = [];
-	let availableAgents = [];
+	let availableDomains: string[] = [];
+	let availableAgents: any[] = [];
 	let autoRefresh = true;
-	let refreshInterval = null;
+	let refreshInterval: ReturnType<typeof setInterval> | null = null;
 	let tooltip = { visible: false, x: 0, y: 0, html: '' };
-	let visitors = [];
-	let topVisitors = [];
+	let visitors: any[] = [];
+	let topVisitors: any[] = [];
 	let visitorsLoading = false;
-	let blocked = [];
+	let blocked: any[] = [];
 	let blockedLoading = false;
-	let worldGeo = null;
+	let worldGeo: any = null;
 	const metricsGroup = createFetchGroup();
 	const visitorsGroup = createFetchGroup();
 	const blockedGroup = createFetchGroup();
 
-	function setTooltip(t) { tooltip = t.visible ? t : { ...tooltip, visible: false }; }
+	function setTooltip(t: any) { tooltip = t.visible ? t : { ...tooltip, visible: false }; }
 
 	async function loadWorldMap() {
 		try {
@@ -93,7 +93,7 @@
 			availableAgents = metricsData.agents || [];
 			renderKey++;
 			tooltip = { visible: false, x: 0, y: 0, html: '' };
-		} catch (err) {
+		} catch (err: any) {
 			if (metricsGroup.isAborted(err)) return;
 			error = err.message;
 		}
@@ -108,7 +108,7 @@
 			if (selectedDomain) url += `&domain=${encodeURIComponent(selectedDomain)}`;
 			const resp = await api(url, { signal: visitorsGroup.signal() });
 			if (resp.ok) { const data = await resp.json(); visitors = data.visitors || []; topVisitors = visitors.slice(0, 10); }
-		} catch (err) {
+		} catch (err: any) {
 			if (visitorsGroup.isAborted(err)) return;
 		}
 		finally { visitorsLoading = false; }
@@ -121,28 +121,28 @@
 			if (selectedAgent) url += `&agent=${encodeURIComponent(selectedAgent)}`;
 			const resp = await api(url, { signal: blockedGroup.signal() });
 			if (resp.ok) { const data = await resp.json(); blocked = data.blocked || []; }
-		} catch (err) {
+		} catch (err: any) {
 			if (blockedGroup.isAborted(err)) return;
 		}
 		finally { blockedLoading = false; }
 	}
 
-	function groupDomains(domains) {
+	function groupDomains(domains: string[]) {
 		if (!domains || domains.length === 0) return [];
-		const getRoot = (d) => { const p = d.split('.'); return p.length > 2 ? p.slice(-2).join('.') : d; };
-		const groups = {};
+		const getRoot = (d: string) => { const p = d.split('.'); return p.length > 2 ? p.slice(-2).join('.') : d; };
+		const groups: Record<string, string[]> = {};
 		for (const d of [...domains].sort()) {
 			const root = getRoot(d);
 			if (!groups[root]) groups[root] = [];
 			groups[root].push(d);
 		}
 		// Sort groups by root domain, put each group's domains together
-		const result = [];
+		const result: { root: string; domains: string[] }[] = [];
 		const roots = Object.keys(groups).sort();
 		for (const root of roots) {
 			const items = groups[root];
 			// Sort: root domain first, then subdomains alphabetically
-			items.sort((a, b) => {
+			items.sort((a: string, b: string) => {
 				if (a === root) return -1;
 				if (b === root) return 1;
 				return a.localeCompare(b);
@@ -154,14 +154,14 @@
 
 	$: domainGroups = groupDomains(availableDomains);
 
-	function changeRange(range) { selectedRange = range; fetchMetrics(); fetchVisitors(); fetchBlocked(); }
-	function changeAgent(e) { selectedAgent = e.target.value; selectedDomain = ''; fetchMetrics(); fetchVisitors(); fetchBlocked(); }
-	function changeDomain(e) { selectedDomain = e.target.value; fetchMetrics(); fetchVisitors(); }
+	function changeRange(range: string) { selectedRange = range; fetchMetrics(); fetchVisitors(); fetchBlocked(); }
+	function changeAgent(e: Event) { selectedAgent = (e.target as HTMLSelectElement).value; selectedDomain = ''; fetchMetrics(); fetchVisitors(); fetchBlocked(); }
+	function changeDomain(e: Event) { selectedDomain = (e.target as HTMLSelectElement).value; fetchMetrics(); fetchVisitors(); }
 
 	let exporting = false;
 	let exportMenuOpen = false;
 
-	async function exportMetrics(format) {
+	async function exportMetrics(format: string) {
 		exportMenuOpen = false;
 		exporting = true;
 		try {
@@ -179,7 +179,7 @@
 			link.download = filename;
 			link.click();
 			URL.revokeObjectURL(link.href);
-		} catch (err) {
+		} catch (err: any) {
 			console.error('Export error:', err);
 		}
 		exporting = false;

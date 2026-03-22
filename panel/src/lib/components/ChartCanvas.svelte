@@ -1,39 +1,73 @@
-<script>
-	import { onMount, onDestroy } from 'svelte';
+<script lang="ts">
 	import { chartLabels, formatBytes, formatNumber, formatMs, formatTime, formatFullTime, esc } from '$lib/metricsUtils';
 
-	export let id = '';
-	export let data = [];
-	export let keys = [];
-	export let colors = [];
-	export let type = 'line';
-	export let formatter = null;
-	export let selectedRange = '24h';
-	export let onTooltip = () => {};
+	interface TooltipPayload {
+		visible: boolean;
+		x?: number;
+		y?: number;
+		html?: string;
+	}
 
-	let canvas;
-	let meta = {};
-	let resizeObserver;
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	type ChartDataRow = Record<string, any>;
 
-	function fmtVal(val) {
+	interface ChartMeta {
+		data: ChartDataRow[];
+		keys: string[];
+		colors: string[];
+		type: string;
+		formatter: string | null;
+		padding: { top: number; right: number; bottom: number; left: number };
+		chartW: number;
+		chartH: number;
+		w: number;
+		h: number;
+		maxVal: number;
+	}
+
+	let {
+		id = '',
+		data = [] as ChartDataRow[],
+		keys = [] as string[],
+		colors = [] as string[],
+		type = 'line',
+		formatter = null as string | null,
+		selectedRange = '24h',
+		onTooltip = (_t: TooltipPayload) => {}
+	}: {
+		id?: string;
+		data?: ChartDataRow[];
+		keys?: string[];
+		colors?: string[];
+		type?: string;
+		formatter?: string | null;
+		selectedRange?: string;
+		onTooltip?: (t: TooltipPayload) => void;
+	} = $props();
+
+	let canvas: HTMLCanvasElement | undefined = $state();
+	let meta: ChartMeta | null = $state(null);
+	let resizeObserver: ResizeObserver | undefined;
+
+	function fmtVal(val: number): string {
 		if (formatter === 'bytes') return formatBytes(val);
 		if (formatter === 'ms') return formatMs(val);
 		return formatNumber(Math.round(val));
 	}
 
-	onMount(() => {
+	$effect(() => {
 		if (!canvas) return;
 		resizeObserver = new ResizeObserver(() => { draw(); });
-		resizeObserver.observe(canvas.parentElement);
+		resizeObserver.observe(canvas.parentElement!);
+		return () => {
+			if (resizeObserver) resizeObserver.disconnect();
+		};
 	});
 
-	onDestroy(() => {
-		if (resizeObserver) resizeObserver.disconnect();
-	});
-
-	function draw() {
+	function draw(): void {
 		if (!canvas || !data || data.length === 0) return;
 		const ctx = canvas.getContext('2d');
+		if (!ctx) return;
 		const dpr = window.devicePixelRatio || 1;
 		const rect = canvas.getBoundingClientRect();
 		if (rect.width === 0 || rect.height === 0) return;
@@ -60,7 +94,7 @@
 		else drawLines(ctx, pad, cW, cH, maxVal);
 	}
 
-	function drawGrid(ctx, pad, cW, cH, h, maxVal) {
+	function drawGrid(ctx: CanvasRenderingContext2D, pad: { top: number; right: number; bottom: number; left: number }, cW: number, cH: number, h: number, maxVal: number): void {
 		const gridN = 4;
 		for (let i = 0; i <= gridN; i++) {
 			const y = Math.round(pad.top + (cH / gridN) * i) + 0.5;
@@ -71,7 +105,7 @@
 		}
 	}
 
-	function drawXLabels(ctx, pad, cW, h) {
+	function drawXLabels(ctx: CanvasRenderingContext2D, pad: { top: number; right: number; bottom: number; left: number }, cW: number, h: number): void {
 		ctx.fillStyle = '#6b6f88'; ctx.font = '13px "DM Sans", system-ui'; ctx.textAlign = 'center';
 		const sLbl = formatTime(data[0].time, selectedRange);
 		const lW = ctx.measureText(sLbl).width + 16;
@@ -87,7 +121,7 @@
 		}
 	}
 
-	function drawStacked(ctx, pad, cW, cH, maxVal) {
+	function drawStacked(ctx: CanvasRenderingContext2D, pad: { top: number; right: number; bottom: number; left: number }, cW: number, cH: number, maxVal: number): void {
 		const bW = Math.max(3, cW / data.length - 1);
 		for (let ki = keys.length-1; ki >= 0; ki--) {
 			ctx.fillStyle = colors[ki];
@@ -101,7 +135,7 @@
 		}
 	}
 
-	function drawLines(ctx, pad, cW, cH, maxVal) {
+	function drawLines(ctx: CanvasRenderingContext2D, pad: { top: number; right: number; bottom: number; left: number }, cW: number, cH: number, maxVal: number): void {
 		for (let ki = 0; ki < keys.length; ki++) {
 			ctx.fillStyle = colors[ki] + '15';
 			ctx.beginPath();
@@ -122,10 +156,11 @@
 		}
 	}
 
-	function redraw(m, hoverIdx = -1) {
+	function redraw(m: ChartMeta, hoverIdx: number = -1): void {
 		if (!canvas) return;
 		const { data: d, keys: k, colors: cc, type: t, padding: pad, chartW: cW, chartH: cH, w, h, maxVal } = m;
 		const ctx = canvas.getContext('2d');
+		if (!ctx) return;
 		ctx.save(); ctx.setTransform(1,0,0,1,0,0); ctx.clearRect(0,0,canvas.width,canvas.height); ctx.restore();
 
 		drawGrid(ctx, pad, cW, cH, h, maxVal);
@@ -139,8 +174,8 @@
 			ctx.strokeStyle='#3d415a'; ctx.lineWidth=1; ctx.setLineDash([4,3]);
 			ctx.beginPath(); ctx.moveTo(hx,pad.top); ctx.lineTo(hx,pad.top+cH); ctx.stroke(); ctx.setLineDash([]);
 			for (let ki=0;ki<k.length;ki++) {
-				const val=d[hoverIdx][k[ki]]||0;
-				let hy;
+				const val = d[hoverIdx][k[ki]]||0;
+				let hy: number;
 				if (t==='stacked') { let s=0; for (let j=0;j<=ki;j++) s+=(d[hoverIdx][k[j]]||0); hy=pad.top+cH-(s/maxVal)*cH; }
 				else { hy=pad.top+cH-(val/maxVal)*cH; }
 				ctx.fillStyle='#1c1e2b'; ctx.beginPath(); ctx.arc(hx,hy,4.5,0,Math.PI*2); ctx.fill();
@@ -149,8 +184,9 @@
 		}
 	}
 
-	function handleHover(e) {
-		if (!meta.data) return;
+	function handleHover(e: MouseEvent): void {
+		if (!meta?.data) return;
+		if (!canvas) return;
 		const rect = canvas.getBoundingClientRect(), mouseX = e.clientX - rect.left;
 		const { data: d, keys: k, colors: cc, padding: pad, chartW: cW } = meta;
 		const relX = mouseX - pad.left;
@@ -159,7 +195,7 @@
 		const pt = d[idx];
 		let html = `<div class="tooltip-time">${esc(formatFullTime(pt.time, selectedRange))}</div>`;
 		for (let ki = 0; ki < k.length; ki++) {
-			const val = pt[k[ki]]||0, label = chartLabels[k[ki]]||k[ki];
+			const val = pt[k[ki]]||0, label = chartLabels[k[ki]] || k[ki];
 			html += `<div class="tooltip-row"><span class="tooltip-dot" style="background:${cc[ki]}"></span><span class="tooltip-label">${esc(label)}</span><span class="tooltip-val">${esc(fmtVal(val))}</span></div>`;
 		}
 		let tx = e.clientX+14, ty = e.clientY-10;
@@ -170,14 +206,16 @@
 		redraw(meta, idx);
 	}
 
-	function handleLeave() {
+	function handleLeave(): void {
 		onTooltip({ visible: false });
-		if (meta.data) redraw(meta);
+		if (meta?.data) redraw(meta);
 	}
 
-	$: if (canvas && data && data.length > 0 && selectedRange) {
-		setTimeout(() => draw(), 0);
-	}
+	$effect(() => {
+		if (canvas && data && data.length > 0 && selectedRange) {
+			setTimeout(() => draw(), 0);
+		}
+	});
 </script>
 
-<canvas bind:this={canvas} {id} on:mousemove={handleHover} on:mouseleave={handleLeave} aria-label="Chart showing {keys.map(k => chartLabels[k] || k).join(', ')} data"></canvas>
+<canvas bind:this={canvas} {id} onmousemove={handleHover} onmouseleave={handleLeave} aria-label="Chart showing {keys.map(k => chartLabels[k] || k).join(', ')} data"></canvas>

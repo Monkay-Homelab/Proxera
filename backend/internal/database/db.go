@@ -3,7 +3,7 @@ package database
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -48,7 +48,7 @@ func Connect() error {
 	}
 
 	DB = pool
-	log.Println("✅ Database connected successfully")
+	slog.Info("Database connected successfully", "component", "db", "max_conns", config.MaxConns, "min_conns", config.MinConns)
 	return nil
 }
 
@@ -90,7 +90,7 @@ func Initialize() error {
 		GROUP BY bucket, agent_id, domain;
 	`
 	if _, err := DB.Exec(context.Background(), agg15min); err != nil {
-		log.Printf("Warning: metrics_15min aggregate creation failed: %v", err)
+		slog.Warn("metrics_15min aggregate creation failed", "component", "db", "error", err)
 	}
 
 	aggHourly := `
@@ -122,7 +122,7 @@ func Initialize() error {
 		GROUP BY bucket, agent_id, domain;
 	`
 	if _, err := DB.Exec(context.Background(), aggHourly); err != nil {
-		log.Printf("Warning: metrics_hourly aggregate creation failed: %v", err)
+		slog.Warn("metrics_hourly aggregate creation failed", "component", "db", "error", err)
 	}
 
 	// Add refresh policies for continuous aggregates
@@ -141,10 +141,10 @@ func Initialize() error {
 		);
 	`
 	if _, err := DB.Exec(context.Background(), refreshPolicies); err != nil {
-		log.Printf("Warning: refresh policy creation failed: %v", err)
+		slog.Warn("Refresh policy creation failed", "component", "db", "error", err)
 	}
 
-	log.Println("Database tables initialized")
+	slog.Info("Database tables initialized", "component", "db")
 
 	// Background: cleanup geo_cache, backfill aggregates, then add retention policies
 	go func() {
@@ -153,39 +153,43 @@ func Initialize() error {
 		// Cleanup geo_cache (regular table, no retention policy available)
 		if _, err := DB.Exec(ctx,
 			`DELETE FROM geo_cache WHERE looked_up_at < NOW() - INTERVAL '90 days'`); err != nil {
-			log.Printf("Warning: geo_cache cleanup failed: %v", err)
+			slog.Warn("geo_cache cleanup failed", "component", "db", "error", err)
 		}
 
-		log.Println("Backfilling continuous aggregates...")
+		slog.Info("Backfilling continuous aggregates...", "component", "db")
 
 		if _, err := DB.Exec(ctx,
 			"CALL refresh_continuous_aggregate('metrics_15min', NULL, NOW())"); err != nil {
-			log.Printf("Warning: metrics_15min backfill failed: %v", err)
+			slog.Warn("metrics_15min backfill failed", "component", "db", "error", err)
 			return // Don't add retention if backfill failed
 		}
 
 		if _, err := DB.Exec(ctx,
 			"CALL refresh_continuous_aggregate('metrics_hourly', NULL, NOW())"); err != nil {
-			log.Printf("Warning: metrics_hourly backfill failed: %v", err)
+			slog.Warn("metrics_hourly backfill failed", "component", "db", "error", err)
 			return
 		}
 
-		log.Println("Backfill complete. Adding retention policies...")
+		slog.Info("Backfill complete, adding retention policies", "component", "db")
 
 		if _, err := DB.Exec(ctx,
 			"SELECT add_retention_policy('metrics', INTERVAL '30 days', if_not_exists => TRUE)"); err != nil {
-			log.Printf("Warning: metrics retention policy failed: %v", err)
+			slog.Warn("metrics retention policy failed", "component", "db", "error", err)
 		}
 		if _, err := DB.Exec(ctx,
 			"SELECT add_retention_policy('metrics_15min', INTERVAL '365 days', if_not_exists => TRUE)"); err != nil {
-			log.Printf("Warning: metrics_15min retention policy failed: %v", err)
+			slog.Warn("metrics_15min retention policy failed", "component", "db", "error", err)
+		}
+		if _, err := DB.Exec(ctx,
+			"SELECT add_retention_policy('metrics_hourly', INTERVAL '365 days', if_not_exists => TRUE)"); err != nil {
+			slog.Warn("metrics_hourly retention policy failed", "component", "db", "error", err)
 		}
 		if _, err := DB.Exec(ctx,
 			"SELECT add_retention_policy('visitor_ips', INTERVAL '90 days', if_not_exists => TRUE)"); err != nil {
-			log.Printf("Warning: visitor_ips retention policy failed: %v", err)
+			slog.Warn("visitor_ips retention policy failed", "component", "db", "error", err)
 		}
 
-		log.Println("Retention policies active.")
+		slog.Info("Retention policies active", "component", "db")
 	}()
 
 	return nil

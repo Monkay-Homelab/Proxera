@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/stores';
@@ -9,7 +9,7 @@
 	const agentId = $page.params.agentId;
 	let activeTab = 'overview';
 	let loading = true;
-	let error = null;
+	let error: string | null = null;
 	let installing = false;
 	let uninstalling = false;
 	let enrollmentKey = '';
@@ -19,17 +19,17 @@
 	let consentChecked = false;
 
 	// Agent selector
-	let agents = [];
+	let agents: any[] = [];
 	let agentName = agentId;
 
 	// Data states
-	let status = null;
-	let decisions = [];
-	let alerts = [];
-	let collections = [];
-	let whitelist = [];
-	let bouncers = [];
-	let metricsData = null;
+	let status: any = null;
+	let decisions: any[] = [];
+	let alerts: any[] = [];
+	let collections: any[] = [];
+	let whitelist: any[] = [];
+	let bouncers: any[] = [];
+	let metricsData: any = null;
 
 	// Form states
 	let banIP = '';
@@ -104,7 +104,7 @@
 		{ value: '720h', label: '30 days' },
 	];
 
-	async function apiGet(path) {
+	async function apiGet(path: string) {
 		const res = await api(`/api/agents/${agentId}/crowdsec${path}`);
 		if (!res.ok) {
 			const data = await res.json().catch(() => ({}));
@@ -114,7 +114,7 @@
 		try { return JSON.parse(text); } catch { return text; }
 	}
 
-	async function apiPost(path, body = {}) {
+	async function apiPost(path: string, body: any = {}) {
 		const res = await api(`/api/agents/${agentId}/crowdsec${path}`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
@@ -127,7 +127,7 @@
 		return res.json();
 	}
 
-	async function apiDelete(path) {
+	async function apiDelete(path: string) {
 		const res = await api(`/api/agents/${agentId}/crowdsec${path}`, { method: 'DELETE' });
 		if (!res.ok) {
 			const data = await res.json().catch(() => ({}));
@@ -161,7 +161,7 @@
 			if (status && status.installed) {
 				loadTabData('overview');
 			}
-		} catch (err) {
+		} catch (err: any) {
 			error = err.message;
 			loading = false;
 		}
@@ -181,7 +181,7 @@
 			toastSuccess('CrowdSec installed successfully!');
 			enrollmentKey = '';
 			await fetchStatus();
-		} catch (err) {
+		} catch (err: any) {
 			error = err.message;
 			toastError('Installation failed: ' + err.message);
 		} finally {
@@ -197,7 +197,7 @@
 			await apiPost('/uninstall');
 			toastSuccess('CrowdSec uninstalled successfully');
 			await fetchStatus();
-		} catch (err) {
+		} catch (err: any) {
 			error = err.message;
 			toastError('Uninstall failed: ' + err.message);
 		} finally {
@@ -205,12 +205,12 @@
 		}
 	}
 
-	async function switchTab(tab) {
+	async function switchTab(tab: string) {
 		activeTab = tab;
 		await loadTabData(tab);
 	}
 
-	async function loadTabData(tab) {
+	async function loadTabData(tab: string) {
 		tabLoading = true;
 		error = null;
 		try {
@@ -243,7 +243,7 @@
 					break;
 				}
 			}
-		} catch (err) {
+		} catch (err: any) {
 			error = err.message;
 		} finally {
 			tabLoading = false;
@@ -257,33 +257,33 @@
 			await apiPost('/decisions', { ip: banIP, duration: banDuration, reason: banReason });
 			banIP = ''; banReason = '';
 			await loadTabData('decisions');
-		} catch (err) {
+		} catch (err: any) {
 			toastError('Failed to ban IP: ' + err.message);
 		} finally {
 			addingDecision = false;
 		}
 	}
 
-	async function deleteDecision(id) {
+	async function deleteDecision(id: any) {
 		if (!await confirmDialog('Remove this ban?', { title: 'Remove Ban', confirmLabel: 'Remove', danger: true })) return;
 		deletingDecisions.add(id); deletingDecisions = deletingDecisions;
 		try {
 			await apiDelete(`/decisions/${id}`);
 			await loadTabData('decisions');
-		} catch (err) {
+		} catch (err: any) {
 			toastError('Failed to remove ban: ' + err.message);
 		} finally {
 			deletingDecisions.delete(id); deletingDecisions = deletingDecisions;
 		}
 	}
 
-	async function deleteAlert(id) {
+	async function deleteAlert(id: any) {
 		if (!await confirmDialog('Delete this alert?', { title: 'Delete Alert', confirmLabel: 'Delete', danger: true })) return;
 		deletingAlerts.add(id); deletingAlerts = deletingAlerts;
 		try {
 			await apiDelete(`/alerts/${id}`);
 			await loadTabData('alerts');
-		} catch (err) {
+		} catch (err: any) {
 			toastError('Failed to delete alert: ' + err.message);
 		} finally {
 			deletingAlerts.delete(id); deletingAlerts = deletingAlerts;
@@ -297,20 +297,20 @@
 			await apiPost('/collections', { name: collectionName });
 			collectionName = '';
 			await loadTabData('collections');
-		} catch (err) {
+		} catch (err: any) {
 			toastError('Failed to install collection: ' + err.message);
 		} finally {
 			addingCollection = false;
 		}
 	}
 
-	async function installPopularCollection(name) {
+	async function installPopularCollection(name: string) {
 		installingCollections.add(name);
 		installingCollections = installingCollections;
 		try {
 			await apiPost('/collections', { name });
 			await loadTabData('collections');
-		} catch (err) {
+		} catch (err: any) {
 			toastError('Failed to install collection: ' + err.message);
 		} finally {
 			installingCollections.delete(name);
@@ -318,17 +318,17 @@
 		}
 	}
 
-	function isCollectionInstalled(name) {
+	function isCollectionInstalled(name: string) {
 		return collections.some(c => c.name === name);
 	}
 
-	async function installBouncer(pkg) {
+	async function installBouncer(pkg: string) {
 		installingBouncers.add(pkg);
 		installingBouncers = installingBouncers;
 		try {
 			await apiPost('/bouncers', { package: pkg });
 			await loadTabData('bouncers');
-		} catch (err) {
+		} catch (err: any) {
 			toastError('Failed to install bouncer: ' + err.message);
 		} finally {
 			installingBouncers.delete(pkg);
@@ -336,30 +336,30 @@
 		}
 	}
 
-	async function removeBouncer(pkg) {
+	async function removeBouncer(pkg: string) {
 		if (!await confirmDialog(`Remove bouncer package ${pkg}?`, { title: 'Remove Bouncer', confirmLabel: 'Remove', danger: true })) return;
 		removingBouncers.add(pkg); removingBouncers = removingBouncers;
 		try {
 			await apiDelete(`/bouncers/${pkg}`);
 			await loadTabData('bouncers');
-		} catch (err) {
+		} catch (err: any) {
 			toastError('Failed to remove bouncer: ' + err.message);
 		} finally {
 			removingBouncers.delete(pkg); removingBouncers = removingBouncers;
 		}
 	}
 
-	function isBouncerInstalled(pkg) {
+	function isBouncerInstalled(pkg: string) {
 		return bouncers.some(b => b.type && b.type.includes(pkg.replace('crowdsec-', '').replace('-iptables', '').replace('-nftables', '')));
 	}
 
-	async function removeCollection(name) {
+	async function removeCollection(name: string) {
 		if (!await confirmDialog(`Remove collection ${name}?`, { title: 'Remove Collection', confirmLabel: 'Remove', danger: true })) return;
 		removingCollections.add(name); removingCollections = removingCollections;
 		try {
 			await apiDelete(`/collections/${name}`);
 			await loadTabData('collections');
-		} catch (err) {
+		} catch (err: any) {
 			toastError('Failed to remove collection: ' + err.message);
 		} finally {
 			removingCollections.delete(name); removingCollections = removingCollections;
@@ -373,20 +373,20 @@
 			await apiPost('/whitelist', { ip: whitelistIP, description: whitelistDesc });
 			whitelistIP = ''; whitelistDesc = '';
 			await loadTabData('whitelist');
-		} catch (err) {
+		} catch (err: any) {
 			toastError('Failed to whitelist IP: ' + err.message);
 		} finally {
 			addingWhitelist = false;
 		}
 	}
 
-	async function removeWhitelistEntry(ip) {
+	async function removeWhitelistEntry(ip: string) {
 		if (!await confirmDialog(`Remove ${ip} from whitelist?`, { title: 'Remove from Whitelist', confirmLabel: 'Remove', danger: true })) return;
 		removingWhitelist.add(ip); removingWhitelist = removingWhitelist;
 		try {
 			await apiDelete(`/whitelist/${ip}`);
 			await loadTabData('whitelist');
-		} catch (err) {
+		} catch (err: any) {
 			toastError('Failed to remove from whitelist: ' + err.message);
 		} finally {
 			removingWhitelist.delete(ip); removingWhitelist = removingWhitelist;
@@ -406,14 +406,14 @@
 				throw new Error(data.error || 'Failed to save');
 			}
 			toastSuccess('Ban duration updated');
-		} catch (err) {
+		} catch (err: any) {
 			toastError('Failed to update ban duration: ' + err.message);
 		} finally {
 			settingsSaving = false;
 		}
 	}
 
-	function parseMetrics(data) {
+	function parseMetrics(data: any) {
 		if (!data) return null;
 		if (typeof data === 'string') {
 			try { return JSON.parse(data); } catch { return null; }
@@ -421,11 +421,11 @@
 		return data;
 	}
 
-	function getMetricsSummary(m) {
+	function getMetricsSummary(m: any) {
 		if (!m) return { totalReads: 0, totalParsed: 0, totalUnparsed: 0, bouncerRequests: 0, apiCalls: 0 };
 		let totalReads = 0, totalParsed = 0, totalUnparsed = 0;
 		if (m.acquisition) {
-			for (const src of Object.values(m.acquisition)) {
+			for (const src of Object.values(m.acquisition) as any[]) {
 				totalReads += src.reads || 0;
 				totalParsed += src.parsed || 0;
 				totalUnparsed += src.unparsed || 0;
@@ -433,28 +433,28 @@
 		}
 		let bouncerRequests = 0;
 		if (m.bouncers) {
-			for (const b of Object.values(m.bouncers)) {
-				for (const endpoint of Object.values(b)) {
+			for (const b of Object.values(m.bouncers) as any[]) {
+				for (const endpoint of Object.values(b) as any[]) {
 					if (endpoint.processed) bouncerRequests += endpoint.processed.request || 0;
 				}
 			}
 		}
 		let apiCalls = 0;
 		if (m.lapi) {
-			for (const endpoint of Object.values(m.lapi)) {
-				for (const count of Object.values(endpoint)) {
-					apiCalls += count || 0;
+			for (const endpoint of Object.values(m.lapi) as any[]) {
+				for (const count of Object.values(endpoint) as any[]) {
+					apiCalls += (count as number) || 0;
 				}
 			}
 		}
 		return { totalReads, totalParsed, totalUnparsed, bouncerRequests, apiCalls };
 	}
 
-	function hasEntries(obj) {
+	function hasEntries(obj: any) {
 		return obj && Object.keys(obj).length > 0;
 	}
 
-	function shortSource(name) {
+	function shortSource(name: string) {
 		return name.replace('file:', '').replace(/^\/var\/log\//, '');
 	}
 </script>
@@ -473,7 +473,7 @@
 			<h1>{agentName}</h1>
 		</div>
 		<div class="head-right">
-			<select class="agent-select" on:change={(e) => goto(`/crowdsec/${e.target.value}`)}>
+			<select class="agent-select" on:change={(e) => goto(`/crowdsec/${(e.target as HTMLSelectElement).value}`)}>
 				{#each agents as a}
 					<option value={a.agent_id} selected={a.agent_id === agentId}>
 						{a.name} ({a.status})
@@ -909,7 +909,8 @@
 											<tr><th>Source</th><th class="num">Reads</th><th class="num">Parsed</th><th class="num">Unparsed</th></tr>
 										</thead>
 										<tbody>
-											{#each Object.entries(m.acquisition) as [source, stats]}
+											{#each Object.entries(m.acquisition) as [source, _stats]}
+												{@const stats = _stats as any}
 												<tr>
 													<td><code>{shortSource(source)}</code></td>
 													<td class="num">{(stats.reads || 0).toLocaleString()}</td>
@@ -932,7 +933,8 @@
 											<tr><th>Parser</th><th class="num">Hits</th><th class="num">Parsed</th><th class="num">Unparsed</th></tr>
 										</thead>
 										<tbody>
-											{#each Object.entries(m.parsers) as [parser, stats]}
+											{#each Object.entries(m.parsers) as [parser, _stats]}
+												{@const stats = _stats as any}
 												<tr>
 													<td><code>{parser}</code></td>
 													<td class="num">{(stats.hits || 0).toLocaleString()}</td>
@@ -955,11 +957,13 @@
 											<tr><th>Bouncer</th><th class="num">Requests Processed</th></tr>
 										</thead>
 										<tbody>
-											{#each Object.entries(m.bouncers) as [name, endpoints]}
+											{#each Object.entries(m.bouncers) as [name, _endpoints]}
+												{@const endpoints = _endpoints as any}
 												<tr>
 													<td><code>{name}</code></td>
 													<td class="num">
-														{#each Object.entries(endpoints) as [, stats]}
+														{#each Object.entries(endpoints) as [, _stats]}
+															{@const stats = _stats as any}
 															{(stats.processed?.request || 0).toLocaleString()}
 														{/each}
 													</td>
@@ -980,8 +984,10 @@
 											<tr><th>Endpoint</th><th>Method</th><th class="num">Calls</th></tr>
 										</thead>
 										<tbody>
-											{#each Object.entries(m.lapi) as [endpoint, methods]}
-												{#each Object.entries(methods) as [method, count]}
+											{#each Object.entries(m.lapi) as [endpoint, _methods]}
+												{@const methods = _methods as any}
+												{#each Object.entries(methods) as [method, _count]}
+													{@const count = _count as any}
 													<tr>
 														<td><code>{endpoint}</code></td>
 														<td><span class="badge method-{method.toLowerCase()}">{method}</span></td>
@@ -1004,7 +1010,8 @@
 											<tr><th>Bouncer</th><th class="num">With Decisions</th><th class="num">Empty</th></tr>
 										</thead>
 										<tbody>
-											{#each Object.entries(m['lapi-decisions']) as [name, stats]}
+											{#each Object.entries(m['lapi-decisions']) as [name, _stats]}
+												{@const stats = _stats as any}
 												<tr>
 													<td><code>{name}</code></td>
 													<td class="num">{(stats.NonEmpty || 0).toLocaleString()}</td>

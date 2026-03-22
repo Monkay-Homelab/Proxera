@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -53,14 +53,14 @@ func (p *PorkbunProvider) post(ctx context.Context, url string, body map[string]
 	if err != nil {
 		return nil, fmt.Errorf("failed to reach Porkbun API: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 
-	log.Printf("[Porkbun] response status=%d body=%s", resp.StatusCode, string(respBody))
+	slog.Info("API response received", "component", "dns", "provider", "porkbun", "status", resp.StatusCode, "response_body", string(respBody))
 
 	var base struct {
 		Status  string `json:"status"`
@@ -73,7 +73,7 @@ func (p *PorkbunProvider) post(ctx context.Context, url string, body map[string]
 		if base.Message != "" {
 			return nil, fmt.Errorf("%s", base.Message)
 		}
-		return nil, fmt.Errorf("Porkbun API returned status %q", base.Status)
+		return nil, fmt.Errorf("porkbun API returned status %q", base.Status)
 	}
 	return respBody, nil
 }
@@ -109,24 +109,23 @@ func toSubdomain(fqdn, domain string) string {
 
 func (p *PorkbunProvider) VerifyZone(ctx context.Context, creds Credentials) (string, string, error) {
 	pingURL := porkbunBase + "/ping"
-	log.Printf("[Porkbun] POST %s (VerifyZone ping)", pingURL)
+	slog.Info("pinging API for credential check", "component", "dns", "provider", "porkbun", "operation", "VerifyZone")
 
-	body, err := p.post(ctx, pingURL, p.auth(creds))
-	if err != nil {
-		log.Printf("[Porkbun] VerifyZone ping failed: %v", err)
+	if _, err := p.post(ctx, pingURL, p.auth(creds)); err != nil {
+		slog.Error("VerifyZone ping failed", "component", "dns", "provider", "porkbun", "error", err)
 		return "", "", fmt.Errorf("credential check failed: %w", err)
 	}
-	log.Printf("[Porkbun] VerifyZone ping OK: %s", string(body))
+	slog.Info("VerifyZone ping succeeded", "component", "dns", "provider", "porkbun")
 
 	// Verify the domain exists in the account
 	retrieveURL := fmt.Sprintf("%s/dns/retrieve/%s", porkbunBase, creds.Domain)
-	log.Printf("[Porkbun] POST %s (VerifyZone domain check)", retrieveURL)
+	slog.Info("verifying domain ownership", "component", "dns", "provider", "porkbun", "domain", creds.Domain)
 
 	if _, err := p.post(ctx, retrieveURL, p.auth(creds)); err != nil {
-		log.Printf("[Porkbun] VerifyZone domain check failed: %v", err)
+		slog.Error("VerifyZone domain check failed", "component", "dns", "provider", "porkbun", "domain", creds.Domain, "error", err)
 		return "", "", fmt.Errorf("domain %q not found in Porkbun account: %w", creds.Domain, err)
 	}
-	log.Printf("[Porkbun] VerifyZone: domain %q verified", creds.Domain)
+	slog.Info("VerifyZone domain verified", "component", "dns", "provider", "porkbun", "domain", creds.Domain)
 
 	// For Porkbun, zoneID == domain name (used in all API paths)
 	return creds.Domain, creds.Domain, nil
@@ -134,11 +133,11 @@ func (p *PorkbunProvider) VerifyZone(ctx context.Context, creds Credentials) (st
 
 func (p *PorkbunProvider) ListRecords(ctx context.Context, creds Credentials) ([]Record, error) {
 	url := fmt.Sprintf("%s/dns/retrieve/%s", porkbunBase, creds.Domain)
-	log.Printf("[Porkbun] POST %s (ListRecords)", url)
+	slog.Info("listing records", "component", "dns", "provider", "porkbun", "domain", creds.Domain)
 
 	raw, err := p.post(ctx, url, p.auth(creds))
 	if err != nil {
-		log.Printf("[Porkbun] ListRecords failed: %v", err)
+		slog.Error("ListRecords failed", "component", "dns", "provider", "porkbun", "domain", creds.Domain, "error", err)
 		return nil, err
 	}
 
@@ -166,7 +165,7 @@ func (p *PorkbunProvider) ListRecords(ctx context.Context, creds Credentials) ([
 			TTL:        ttl,
 		})
 	}
-	log.Printf("[Porkbun] ListRecords: returned %d records", len(records))
+	slog.Info("ListRecords completed", "component", "dns", "provider", "porkbun", "record_count", len(records))
 	return records, nil
 }
 
@@ -176,7 +175,7 @@ func (p *PorkbunProvider) CreateRecord(ctx context.Context, creds Credentials, r
 	if ttl < 600 {
 		ttl = 600 // Porkbun minimum TTL
 	}
-	log.Printf("[Porkbun] POST %s (CreateRecord type=%s name=%s content=%s ttl=%d)", url, r.Type, r.Name, r.Content, ttl)
+	slog.Info("creating record", "component", "dns", "provider", "porkbun", "record_type", r.Type, "name", r.Name, "content", r.Content, "ttl", ttl)
 
 	body := p.auth(creds)
 	body["name"] = toSubdomain(r.Name, creds.Domain)
@@ -186,7 +185,7 @@ func (p *PorkbunProvider) CreateRecord(ctx context.Context, creds Credentials, r
 
 	raw, err := p.post(ctx, url, body)
 	if err != nil {
-		log.Printf("[Porkbun] CreateRecord failed: %v", err)
+		slog.Error("CreateRecord failed", "component", "dns", "provider", "porkbun", "error", err)
 		return Record{}, err
 	}
 
@@ -206,7 +205,7 @@ func (p *PorkbunProvider) CreateRecord(ctx context.Context, creds Credentials, r
 	default:
 		return Record{}, fmt.Errorf("unexpected id type in Porkbun create response: %T", result.ID)
 	}
-	log.Printf("[Porkbun] CreateRecord: created id=%s", recordID)
+	slog.Info("CreateRecord completed", "component", "dns", "provider", "porkbun", "record_id", recordID)
 
 	return Record{
 		ProviderID: recordID,
@@ -223,7 +222,7 @@ func (p *PorkbunProvider) UpdateRecord(ctx context.Context, creds Credentials, p
 	if ttl < 600 {
 		ttl = 600 // Porkbun minimum TTL
 	}
-	log.Printf("[Porkbun] POST %s (UpdateRecord type=%s name=%s content=%s ttl=%d)", url, r.Type, r.Name, r.Content, ttl)
+	slog.Info("updating record", "component", "dns", "provider", "porkbun", "record_id", providerID, "record_type", r.Type, "name", r.Name, "content", r.Content, "ttl", ttl)
 
 	body := p.auth(creds)
 	body["name"] = toSubdomain(r.Name, creds.Domain)
@@ -232,10 +231,10 @@ func (p *PorkbunProvider) UpdateRecord(ctx context.Context, creds Credentials, p
 	body["ttl"] = strconv.Itoa(ttl)
 
 	if _, err := p.post(ctx, url, body); err != nil {
-		log.Printf("[Porkbun] UpdateRecord failed: %v", err)
+		slog.Error("UpdateRecord failed", "component", "dns", "provider", "porkbun", "record_id", providerID, "error", err)
 		return Record{}, err
 	}
-	log.Printf("[Porkbun] UpdateRecord: updated id=%s", providerID)
+	slog.Info("UpdateRecord completed", "component", "dns", "provider", "porkbun", "record_id", providerID)
 
 	return Record{
 		ProviderID: providerID,
@@ -249,11 +248,11 @@ func (p *PorkbunProvider) UpdateRecord(ctx context.Context, creds Credentials, p
 func (p *PorkbunProvider) PatchContent(ctx context.Context, creds Credentials, providerID string, content string) error {
 	// Fetch current record to get name/type/TTL required for the edit call.
 	listURL := fmt.Sprintf("%s/dns/retrieve/%s", porkbunBase, creds.Domain)
-	log.Printf("[Porkbun] POST %s (PatchContent pre-fetch for record %s)", listURL, providerID)
+	slog.Info("fetching records for PatchContent", "component", "dns", "provider", "porkbun", "record_id", providerID)
 
 	raw, err := p.post(ctx, listURL, p.auth(creds))
 	if err != nil {
-		log.Printf("[Porkbun] PatchContent pre-fetch failed: %v", err)
+		slog.Error("PatchContent pre-fetch failed", "component", "dns", "provider", "porkbun", "record_id", providerID, "error", err)
 		return err
 	}
 
@@ -273,7 +272,7 @@ func (p *PorkbunProvider) PatchContent(ctx context.Context, creds Credentials, p
 	for _, r := range result.Records {
 		if r.ID == providerID {
 			ttl, _ := strconv.Atoi(r.TTL)
-			log.Printf("[Porkbun] PatchContent: updating record %s (%s %s) content %q -> %q", providerID, r.Type, r.Name, r.Content, content)
+			slog.Info("PatchContent updating record", "component", "dns", "provider", "porkbun", "record_id", providerID, "record_type", r.Type, "name", r.Name, "old_content", r.Content, "new_content", content)
 			_, err = p.UpdateRecord(ctx, creds, providerID, RecordInput{
 				Name:    toFQDN(r.Name, creds.Domain),
 				Type:    r.Type,
@@ -283,18 +282,18 @@ func (p *PorkbunProvider) PatchContent(ctx context.Context, creds Credentials, p
 			return err
 		}
 	}
-	log.Printf("[Porkbun] PatchContent: record %s not found (zone has %d records)", providerID, len(result.Records))
+	slog.Warn("PatchContent record not found", "component", "dns", "provider", "porkbun", "record_id", providerID, "zone_record_count", len(result.Records))
 	return fmt.Errorf("record %s not found in Porkbun zone", providerID)
 }
 
 func (p *PorkbunProvider) DeleteRecord(ctx context.Context, creds Credentials, providerID string) error {
 	url := fmt.Sprintf("%s/dns/delete/%s/%s", porkbunBase, creds.Domain, providerID)
-	log.Printf("[Porkbun] POST %s (DeleteRecord)", url)
+	slog.Info("deleting record", "component", "dns", "provider", "porkbun", "record_id", providerID)
 
 	if _, err := p.post(ctx, url, p.auth(creds)); err != nil {
-		log.Printf("[Porkbun] DeleteRecord failed: %v", err)
+		slog.Error("DeleteRecord failed", "component", "dns", "provider", "porkbun", "record_id", providerID, "error", err)
 		return err
 	}
-	log.Printf("[Porkbun] DeleteRecord: deleted id=%s", providerID)
+	slog.Info("DeleteRecord completed", "component", "dns", "provider", "porkbun", "record_id", providerID)
 	return nil
 }

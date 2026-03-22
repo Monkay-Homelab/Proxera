@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/proxera/agent/pkg/types"
@@ -136,7 +136,7 @@ func deployHostToAgent(userID, agentDBID int, domain, upstreamURL string, ssl, w
 		if err := localAgent.ApplyHost(host); err != nil {
 			return fmt.Errorf("deploy failed: %w", err)
 		}
-		log.Printf("[Deploy] Host %s deployed to local agent", domain)
+		slog.Info("host deployed to local agent", "component", "deploy", "host_domain", domain)
 		return nil
 	}
 
@@ -145,12 +145,11 @@ func deployHostToAgent(userID, agentDBID int, domain, upstreamURL string, ssl, w
 		Payload: payload,
 	}
 
-	response, err := SendCommandAndWaitForResponse(agentStringID, command, CmdTimeoutDefault)
-	if err != nil {
+	if _, err := SendCommandAndWaitForResponse(agentStringID, command, CmdTimeoutDefault); err != nil {
 		return fmt.Errorf("deploy failed: %w", err)
 	}
 
-	log.Printf("[Deploy] Host %s deployed to agent %s: %s", domain, agentStringID, response)
+	slog.Info("host deployed to agent", "component", "deploy", "host_domain", domain, "agent_id", agentStringID)
 	return nil
 }
 
@@ -166,7 +165,7 @@ func removeHostFromAgent(agentDBID int, domain string) error {
 		if err := localAgent.RemoveHost(domain); err != nil {
 			return fmt.Errorf("remove failed: %w", err)
 		}
-		log.Printf("[Deploy] Host %s removed from local agent", domain)
+		slog.Info("host removed from local agent", "component", "deploy", "host_domain", domain)
 		return nil
 	}
 
@@ -177,12 +176,11 @@ func removeHostFromAgent(agentDBID int, domain string) error {
 		},
 	}
 
-	response, err := SendCommandAndWaitForResponse(agentStringID, command, CmdTimeoutDefault)
-	if err != nil {
+	if _, err := SendCommandAndWaitForResponse(agentStringID, command, CmdTimeoutDefault); err != nil {
 		return fmt.Errorf("remove failed: %w", err)
 	}
 
-	log.Printf("[Deploy] Host %s removed from agent %s: %s", domain, agentStringID, response)
+	slog.Info("host removed from agent", "component", "deploy", "host_domain", domain, "agent_id", agentStringID)
 	return nil
 }
 
@@ -219,23 +217,23 @@ func DeployAllToAgent(c *fiber.Ctx) error {
 		}
 
 		var config *HostAdvancedConfig
-		if configBytes != nil && len(configBytes) > 0 && string(configBytes) != "{}" {
+		if len(configBytes) > 0 && string(configBytes) != "{}" {
 			config = &HostAdvancedConfig{}
 			if err := json.Unmarshal(configBytes, config); err != nil {
-				log.Printf("[Deploy] Failed to parse config for %s: %v", domain, err)
+				slog.Error("failed to parse config", "component", "deploy", "host_domain", domain, "error", err)
 				config = nil
 			}
 		}
 
 		payload, err := buildHostPayload(hostUserID, domain, upstreamURL, ssl, ws, certID, config)
 		if err != nil {
-			log.Printf("[Deploy] Failed to build payload for %s: %v", domain, err)
+			slog.Error("failed to build payload", "component", "deploy", "host_domain", domain, "error", err)
 			continue
 		}
 		hosts = append(hosts, payload)
 	}
 	if err := rows.Err(); err != nil {
-		log.Printf("[Deploy] Error iterating hosts for agent %s: %v", agentID, err)
+		slog.Error("error iterating hosts for agent", "component", "deploy", "agent_id", agentID, "error", err)
 	}
 
 	// Local agent: dispatch directly

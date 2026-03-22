@@ -3,11 +3,12 @@ package email
 import (
 	"crypto/tls"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"net/smtp"
 	"strings"
 
+	"github.com/proxera/backend/internal/crypto"
 	"github.com/proxera/backend/internal/settings"
 )
 
@@ -59,6 +60,15 @@ func sendMail(to, subject, body string) error {
 	pass := settings.Get("SMTP_PASSWORD", "")
 	from := settings.Get("SMTP_FROM_EMAIL", "")
 
+	// Attempt to decrypt the SMTP password. If decryption fails, the value is
+	// either a plaintext password from an env var or a pre-encryption DB entry.
+	// In both cases, use the raw value for backward compatibility.
+	if pass != "" {
+		if decrypted, err := crypto.Decrypt(pass); err == nil {
+			pass = decrypted
+		}
+	}
+
 	if host == "" || port == "" || user == "" || pass == "" {
 		return fmt.Errorf("SMTP not configured (missing SMTP_HOST/PORT/USER/PASSWORD)")
 	}
@@ -98,10 +108,10 @@ func sendSMTPS(addr, host string, auth smtp.Auth, from, to, msg string) error {
 
 	client, err := smtp.NewClient(conn, host)
 	if err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return fmt.Errorf("SMTP client creation failed: %w", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	if err = client.Auth(auth); err != nil {
 		return fmt.Errorf("SMTP auth failed: %w", err)
@@ -129,7 +139,7 @@ func sendSMTPS(addr, host string, auth smtp.Auth, from, to, msg string) error {
 	}
 
 	if err = client.Quit(); err != nil {
-		log.Printf("SMTP QUIT warning: %v", err)
+		slog.Warn("SMTP QUIT warning", "component", "email", "error", err)
 	}
 
 	return nil

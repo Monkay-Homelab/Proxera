@@ -3,10 +3,11 @@ package handlers
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/mail"
 	"os"
 	"time"
@@ -46,7 +47,7 @@ func RegistrationStatus(c *fiber.Ctx) error {
 	// If disabled, check if any users exist — if none, allow registration for first admin
 	if mode == "disabled" {
 		var count int
-		database.DB.QueryRow(context.Background(), `SELECT COUNT(*) FROM users`).Scan(&count)
+		_ = database.DB.QueryRow(context.Background(), `SELECT COUNT(*) FROM users`).Scan(&count)
 		if count == 0 {
 			mode = "open"
 		}
@@ -129,7 +130,7 @@ func Register(c *fiber.Ctx) error {
 		err = database.DB.QueryRow(context.Background(),
 			`SELECT value FROM system_settings WHERE key = 'invite_code'`,
 		).Scan(&inviteCode)
-		if err != nil || req.InviteCode != inviteCode {
+		if err != nil || subtle.ConstantTimeCompare([]byte(req.InviteCode), []byte(inviteCode)) != 1 {
 			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
 				"error": "Invalid or missing invite code",
 			})
@@ -149,10 +150,10 @@ func Register(c *fiber.Ctx) error {
 			"error": "Failed to create user",
 		})
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after successful commit
 
 	// Advisory lock ensures only one concurrent registration can check user count
-	tx.Exec(ctx, `SELECT pg_advisory_xact_lock(1)`)
+	_, _ = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(1)`)
 
 	query := `
 		INSERT INTO users (email, name, password, role)
@@ -190,7 +191,7 @@ func Register(c *fiber.Ctx) error {
 	if emailVerificationEnabled() {
 		token, tokenErr := generateVerificationToken()
 		if tokenErr != nil {
-			log.Printf("Failed to generate verification token for user %d: %v", user.ID, tokenErr)
+			slog.Error("failed to generate verification token", "component", "auth", "user_id", user.ID, "error", tokenErr)
 		} else {
 			expires := time.Now().Add(SessionExpiry)
 
@@ -199,10 +200,10 @@ func Register(c *fiber.Ctx) error {
 				token, expires, user.ID,
 			)
 			if err != nil {
-				log.Printf("Failed to save verification token for user %d: %v", user.ID, err)
+				slog.Error("failed to save verification token", "component", "auth", "user_id", user.ID, "error", err)
 			} else {
 				if err := email.SendVerificationEmail(user.Email, user.Name, token); err != nil {
-					log.Printf("Failed to send verification email to %s: %v", user.Email, err)
+					slog.Error("failed to send verification email", "component", "auth", "user_id", user.ID, "error", err)
 				}
 			}
 		}
@@ -412,7 +413,7 @@ func ResendVerification(c *fiber.Ctx) error {
 	}
 
 	if err := email.SendVerificationEmail(req.Email, name, token); err != nil {
-		log.Printf("Failed to send verification email to %s: %v", req.Email, err)
+		slog.Error("failed to send verification email", "component", "auth", "user_id", userID, "error", err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error": "Failed to send verification email",
 		})
@@ -453,14 +454,17 @@ func ResetPassword(c *fiber.Ctx) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// Look up the token
+	// Hash the incoming token to match the stored SHA-256 hash.
+	tokenHash := HashAPIKey(req.Token)
+
+	// Look up the token by its hash
 	var tokenID int64
 	var userID int
 	var expiresAt time.Time
 	var usedAt *time.Time
 	err := database.DB.QueryRow(ctx,
 		`SELECT id, user_id, expires_at, used_at FROM password_reset_tokens WHERE token = $1`,
-		req.Token,
+		tokenHash,
 	).Scan(&tokenID, &userID, &expiresAt, &usedAt)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid or expired reset token"})

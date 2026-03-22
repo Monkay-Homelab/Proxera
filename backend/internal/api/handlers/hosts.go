@@ -3,7 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
-	"log"
+	"log/slog"
 	"net/url"
 	"regexp"
 	"strconv"
@@ -72,7 +72,7 @@ func verifyProviderOwnership(providerID, userID int, role string) (bool, error) 
 }
 
 func scanHostConfig(configBytes []byte) *HostAdvancedConfig {
-	if configBytes == nil || len(configBytes) == 0 || string(configBytes) == "{}" {
+	if len(configBytes) == 0 || string(configBytes) == "{}" {
 		return nil
 	}
 	var cfg HostAdvancedConfig
@@ -125,14 +125,14 @@ func ListAllHosts(c *fiber.Ctx) error {
 		var h HostConfigResponse
 		var configBytes []byte
 		if err := rows.Scan(&h.ID, &h.ProviderID, &h.Domain, &h.UpstreamURL, &h.SSL, &h.WebSocket, &h.AgentID, &h.CertificateID, &configBytes, &h.CreatedAt, &h.UpdatedAt); err != nil {
-			log.Printf("[Hosts] Scan error: %v", err)
+			slog.Error("scan error", "component", "hosts", "error", err)
 			continue
 		}
 		h.Config = scanHostConfig(configBytes)
 		configs = append(configs, h)
 	}
 	if err := rows.Err(); err != nil {
-		log.Printf("[Hosts] Error iterating hosts: %v", err)
+		slog.Error("error iterating hosts", "component", "hosts", "error", err)
 	}
 
 	return c.JSON(configs)
@@ -167,14 +167,14 @@ func ListHostConfigs(c *fiber.Ctx) error {
 		var h HostConfigResponse
 		var configBytes []byte
 		if err := rows.Scan(&h.ID, &h.ProviderID, &h.Domain, &h.UpstreamURL, &h.SSL, &h.WebSocket, &h.AgentID, &h.CertificateID, &configBytes, &h.CreatedAt, &h.UpdatedAt); err != nil {
-			log.Printf("[Hosts] Scan error: %v", err)
+			slog.Error("scan error", "component", "hosts", "error", err)
 			continue
 		}
 		h.Config = scanHostConfig(configBytes)
 		configs = append(configs, h)
 	}
 	if err := rows.Err(); err != nil {
-		log.Printf("[Hosts] Error iterating host configs: %v", err)
+		slog.Error("error iterating host configs", "component", "hosts", "error", err)
 	}
 
 	return c.JSON(configs)
@@ -247,7 +247,7 @@ func CreateHostConfig(c *fiber.Ctx) error {
 		var marshalErr error
 		configJSON, marshalErr = json.Marshal(req.Config)
 		if marshalErr != nil {
-			log.Printf("[Hosts] Failed to marshal config: %v", marshalErr)
+			slog.Error("failed to marshal config", "component", "hosts", "error", marshalErr)
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid config"})
 		}
 	} else {
@@ -264,7 +264,7 @@ func CreateHostConfig(c *fiber.Ctx) error {
 		userID, providerID, req.Domain, req.UpstreamURL, req.SSL, req.WebSocket, req.AgentID, req.CertificateID, configJSON,
 	).Scan(&h.ID, &h.ProviderID, &h.Domain, &h.UpstreamURL, &h.SSL, &h.WebSocket, &h.AgentID, &h.CertificateID, &configBytes, &h.CreatedAt, &h.UpdatedAt)
 	if err != nil {
-		log.Printf("[Hosts] Create failed: %v", err)
+		slog.Error("create host config failed", "component", "hosts", "domain", req.Domain, "error", err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to create host config"})
 	}
 	h.Config = scanHostConfig(configBytes)
@@ -274,7 +274,7 @@ func CreateHostConfig(c *fiber.Ctx) error {
 	if h.AgentID != nil {
 		if err := deployHostToAgent(userID, *h.AgentID, h.Domain, h.UpstreamURL, h.SSL, h.WebSocket, h.CertificateID, h.Config); err != nil {
 			deployError = err.Error()
-			log.Printf("[Deploy] Auto-deploy failed for host %s: %v", h.Domain, err)
+			slog.Error("auto-deploy failed for host", "component", "hosts", "domain", h.Domain, "error", err)
 		}
 	}
 
@@ -336,7 +336,7 @@ func UpdateHostConfig(c *fiber.Ctx) error {
 		var marshalErr error
 		configJSON, marshalErr = json.Marshal(req.Config)
 		if marshalErr != nil {
-			log.Printf("[Hosts] Failed to marshal config: %v", marshalErr)
+			slog.Error("failed to marshal config", "component", "hosts", "error", marshalErr)
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid config"})
 		}
 	} else {
@@ -362,7 +362,7 @@ func UpdateHostConfig(c *fiber.Ctx) error {
 	if h.AgentID != nil {
 		if err := deployHostToAgent(userID, *h.AgentID, h.Domain, h.UpstreamURL, h.SSL, h.WebSocket, h.CertificateID, h.Config); err != nil {
 			deployError = err.Error()
-			log.Printf("[Deploy] Auto-deploy failed for host %s: %v", h.Domain, err)
+			slog.Error("auto-deploy failed for host", "component", "hosts", "domain", h.Domain, "error", err)
 		}
 	}
 
@@ -428,7 +428,7 @@ func DeleteHostConfig(c *fiber.Ctx) error {
 	// Auto-remove from agent if was assigned
 	if hostAgentID != nil && hostDomain != "" {
 		if err := removeHostFromAgent(*hostAgentID, hostDomain); err != nil {
-			log.Printf("[Deploy] Auto-remove failed for host %s: %v", hostDomain, err)
+			slog.Error("auto-remove failed for host", "component", "hosts", "domain", hostDomain, "error", err)
 		}
 	}
 

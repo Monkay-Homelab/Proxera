@@ -6,7 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"log"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -40,36 +40,6 @@ func generateAPIKey() (string, error) {
 func HashAPIKey(apiKey string) string {
 	h := sha256.Sum256([]byte(apiKey)) // #nosec - SHA-256 is safe for high-entropy API keys
 	return hex.EncodeToString(h[:])
-}
-
-// MigrateAPIKeyHashes hashes any existing plaintext API keys that don't have a hash yet
-func MigrateAPIKeyHashes() {
-	rows, err := database.DB.Query(context.Background(),
-		`SELECT id, api_key FROM agents WHERE api_key_hash IS NULL AND api_key IS NOT NULL AND api_key != ''`)
-	if err != nil {
-		log.Printf("Failed to query agents for API key migration: %v", err)
-		return
-	}
-	defer rows.Close()
-
-	migrated := 0
-	for rows.Next() {
-		var id int
-		var plainKey string
-		if err := rows.Scan(&id, &plainKey); err != nil {
-			continue
-		}
-		hash := HashAPIKey(plainKey)
-		if _, err := database.DB.Exec(context.Background(),
-			`UPDATE agents SET api_key_hash = $1, api_key = '' WHERE id = $2`, hash, id); err != nil {
-			log.Printf("Failed to migrate API key hash for agent %d: %v", id, err)
-		} else {
-			migrated++
-		}
-	}
-	if migrated > 0 {
-		log.Printf("Migrated %d agent API key hashes (plaintext cleared)", migrated)
-	}
 }
 
 // verifyAgentAccessByID checks that the authenticated user can access the given agent.
@@ -135,8 +105,8 @@ func RegisterAgent(c *fiber.Ctx) error {
 
 	// Insert agent into database (only store hash, never plaintext)
 	query := `
-		INSERT INTO agents (user_id, agent_id, name, api_key, api_key_hash, version, os, arch, status)
-		VALUES ($1, $2, $3, '', $4, $5, $6, $7, 'offline')
+		INSERT INTO agents (user_id, agent_id, name, api_key_hash, version, os, arch, status)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, 'offline')
 		RETURNING id, created_at
 	`
 
@@ -250,14 +220,14 @@ func ListAgents(c *fiber.Ctx) error {
 			&agent.UserID,
 		)
 		if err != nil {
-			log.Printf("Error scanning agent row: %v", err)
+			slog.Error("error scanning agent row", "component", "agents", "error", err)
 			continue
 		}
 		markAgentOfflineIfStale(&agent)
 		agents = append(agents, agent)
 	}
 	if err := rows.Err(); err != nil {
-		log.Printf("Error iterating agents: %v", err)
+		slog.Error("error iterating agents", "component", "agents", "error", err)
 	}
 
 	return c.JSON(agents)
@@ -668,7 +638,7 @@ func SetMetricsInterval(c *fiber.Ctx) error {
 	if _, err := database.DB.Exec(context.Background(),
 		`UPDATE agents SET metrics_interval = $1 WHERE agent_id = $2`, body.Interval, agentID,
 	); err != nil {
-		log.Printf("Failed to save metrics_interval to DB: %v", err)
+		slog.Error("failed to save metrics_interval to DB", "component", "agents", "agent_id", agentID, "error", err)
 	}
 
 	// Local agent doesn't use WebSocket — interval is read from DB on next cycle

@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -21,7 +21,7 @@ type IONOSProvider struct{}
 
 func (p *IONOSProvider) VerifyZone(ctx context.Context, creds Credentials) (string, string, error) {
 	url := ionosBase + "/zones"
-	log.Printf("[IONOS] GET %s (VerifyZone domain=%q)", url, creds.Domain)
+	slog.Info("fetching zones", "component", "dns", "provider", "ionos", "operation", "VerifyZone", "domain", creds.Domain)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
@@ -32,11 +32,11 @@ func (p *IONOSProvider) VerifyZone(ctx context.Context, creds Credentials) (stri
 
 	resp, err := ionosClient.Do(req)
 	if err != nil {
-		log.Printf("[IONOS] VerifyZone request failed: %v", err)
+		slog.Error("VerifyZone request failed", "component", "dns", "provider", "ionos", "error", err)
 		return "", "", fmt.Errorf("failed to reach IONOS API: %w", err)
 	}
-	defer resp.Body.Close()
-	log.Printf("[IONOS] VerifyZone response: %d", resp.StatusCode)
+	defer func() { _ = resp.Body.Close() }()
+	slog.Info("VerifyZone response received", "component", "dns", "provider", "ionos", "status", resp.StatusCode)
 
 	if resp.StatusCode == 401 {
 		return "", "", fmt.Errorf("invalid API key")
@@ -52,12 +52,12 @@ func (p *IONOSProvider) VerifyZone(ctx context.Context, creds Credentials) (stri
 	if err := json.NewDecoder(resp.Body).Decode(&zones); err != nil {
 		return "", "", fmt.Errorf("failed to parse IONOS response: %w", err)
 	}
-	log.Printf("[IONOS] VerifyZone: found %d zones in account", len(zones))
+	slog.Info("VerifyZone found zones", "component", "dns", "provider", "ionos", "zone_count", len(zones))
 
 	want := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(creds.Domain), "."))
 	for _, z := range zones {
 		if strings.ToLower(z.Name) == want {
-			log.Printf("[IONOS] VerifyZone: matched zone %q -> id=%s", z.Name, z.ID)
+			slog.Info("VerifyZone matched zone", "component", "dns", "provider", "ionos", "zone_name", z.Name, "zone_id", z.ID)
 			return z.Name, z.ID, nil
 		}
 	}
@@ -66,7 +66,7 @@ func (p *IONOSProvider) VerifyZone(ctx context.Context, creds Credentials) (stri
 
 func (p *IONOSProvider) ListRecords(ctx context.Context, creds Credentials) ([]Record, error) {
 	url := fmt.Sprintf("%s/zones/%s", ionosBase, creds.ZoneID)
-	log.Printf("[IONOS] GET %s (ListRecords)", url)
+	slog.Info("listing records", "component", "dns", "provider", "ionos", "operation", "ListRecords", "zone_id", creds.ZoneID)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
@@ -77,11 +77,11 @@ func (p *IONOSProvider) ListRecords(ctx context.Context, creds Credentials) ([]R
 
 	resp, err := ionosClient.Do(req)
 	if err != nil {
-		log.Printf("[IONOS] ListRecords request failed: %v", err)
+		slog.Error("ListRecords request failed", "component", "dns", "provider", "ionos", "error", err)
 		return nil, fmt.Errorf("failed to reach IONOS API: %w", err)
 	}
-	defer resp.Body.Close()
-	log.Printf("[IONOS] ListRecords response: %d", resp.StatusCode)
+	defer func() { _ = resp.Body.Close() }()
+	slog.Info("ListRecords response received", "component", "dns", "provider", "ionos", "status", resp.StatusCode)
 
 	if resp.StatusCode != 200 {
 		return nil, fmt.Errorf("IONOS API returned status %d", resp.StatusCode)
@@ -114,13 +114,13 @@ func (p *IONOSProvider) ListRecords(ctx context.Context, creds Credentials) ([]R
 			TTL:        r.TTL,
 		})
 	}
-	log.Printf("[IONOS] ListRecords: returned %d records (of %d total, disabled excluded)", len(records), len(zone.Records))
+	slog.Info("ListRecords completed", "component", "dns", "provider", "ionos", "returned", len(records), "total", len(zone.Records))
 	return records, nil
 }
 
 func (p *IONOSProvider) CreateRecord(ctx context.Context, creds Credentials, r RecordInput) (Record, error) {
 	url := fmt.Sprintf("%s/zones/%s/records", ionosBase, creds.ZoneID)
-	log.Printf("[IONOS] POST %s (CreateRecord type=%s name=%s content=%s)", url, r.Type, r.Name, r.Content)
+	slog.Info("creating record", "component", "dns", "provider", "ionos", "record_type", r.Type, "name", r.Name, "content", r.Content)
 
 	// IONOS takes an array body
 	body := []map[string]interface{}{
@@ -147,15 +147,15 @@ func (p *IONOSProvider) CreateRecord(ctx context.Context, creds Credentials, r R
 
 	resp, err := ionosClient.Do(req)
 	if err != nil {
-		log.Printf("[IONOS] CreateRecord request failed: %v", err)
+		slog.Error("CreateRecord request failed", "component", "dns", "provider", "ionos", "error", err)
 		return Record{}, fmt.Errorf("failed to reach IONOS API: %w", err)
 	}
-	defer resp.Body.Close()
-	log.Printf("[IONOS] CreateRecord response: %d", resp.StatusCode)
+	defer func() { _ = resp.Body.Close() }()
+	slog.Info("CreateRecord response received", "component", "dns", "provider", "ionos", "status", resp.StatusCode)
 
 	if resp.StatusCode != 200 && resp.StatusCode != 201 {
 		errBody, _ := io.ReadAll(resp.Body)
-		log.Printf("[IONOS] CreateRecord error body: %s", string(errBody))
+		slog.Error("CreateRecord failed", "component", "dns", "provider", "ionos", "status", resp.StatusCode, "response_body", string(errBody))
 		return Record{}, fmt.Errorf("IONOS API error (status %d): %s", resp.StatusCode, string(errBody))
 	}
 
@@ -172,7 +172,7 @@ func (p *IONOSProvider) CreateRecord(ctx context.Context, creds Credentials, r R
 	if len(created) == 0 {
 		return Record{}, fmt.Errorf("IONOS returned no records after creation")
 	}
-	log.Printf("[IONOS] CreateRecord: created record id=%s name=%s", created[0].ID, created[0].Name)
+	slog.Info("CreateRecord completed", "component", "dns", "provider", "ionos", "record_id", created[0].ID, "name", created[0].Name)
 	return Record{
 		ProviderID: created[0].ID,
 		Type:       created[0].Type,
@@ -184,7 +184,7 @@ func (p *IONOSProvider) CreateRecord(ctx context.Context, creds Credentials, r R
 
 func (p *IONOSProvider) UpdateRecord(ctx context.Context, creds Credentials, providerID string, r RecordInput) (Record, error) {
 	url := fmt.Sprintf("%s/zones/%s/records/%s", ionosBase, creds.ZoneID, providerID)
-	log.Printf("[IONOS] PUT %s (UpdateRecord type=%s name=%s content=%s)", url, r.Type, r.Name, r.Content)
+	slog.Info("updating record", "component", "dns", "provider", "ionos", "record_id", providerID, "record_type", r.Type, "name", r.Name, "content", r.Content)
 
 	body := map[string]interface{}{
 		"name":     r.Name,
@@ -208,15 +208,15 @@ func (p *IONOSProvider) UpdateRecord(ctx context.Context, creds Credentials, pro
 
 	resp, err := ionosClient.Do(req)
 	if err != nil {
-		log.Printf("[IONOS] UpdateRecord request failed: %v", err)
+		slog.Error("UpdateRecord request failed", "component", "dns", "provider", "ionos", "error", err)
 		return Record{}, fmt.Errorf("failed to reach IONOS API: %w", err)
 	}
-	defer resp.Body.Close()
-	log.Printf("[IONOS] UpdateRecord response: %d", resp.StatusCode)
+	defer func() { _ = resp.Body.Close() }()
+	slog.Info("UpdateRecord response received", "component", "dns", "provider", "ionos", "status", resp.StatusCode)
 
 	if resp.StatusCode != 200 {
 		errBody, _ := io.ReadAll(resp.Body)
-		log.Printf("[IONOS] UpdateRecord error body: %s", string(errBody))
+		slog.Error("UpdateRecord failed", "component", "dns", "provider", "ionos", "status", resp.StatusCode, "response_body", string(errBody))
 		return Record{}, fmt.Errorf("IONOS API error (status %d): %s", resp.StatusCode, string(errBody))
 	}
 
@@ -228,7 +228,7 @@ func (p *IONOSProvider) UpdateRecord(ctx context.Context, creds Credentials, pro
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&updated); err != nil {
 		// PUT may return 200 with empty body — fall back to input values
-		log.Printf("[IONOS] UpdateRecord: empty response body, using input values")
+		slog.Warn("UpdateRecord returned empty body, using input values", "component", "dns", "provider", "ionos", "record_id", providerID)
 		return Record{ProviderID: providerID, Type: r.Type, Name: r.Name, Content: r.Content, TTL: r.TTL}, nil
 	}
 	return Record{
@@ -244,7 +244,7 @@ func (p *IONOSProvider) PatchContent(ctx context.Context, creds Credentials, pro
 	// IONOS has no PATCH — we need the current record's name/type/TTL to issue a full PUT.
 	// Fetch the zone and find the record by ID.
 	zoneURL := fmt.Sprintf("%s/zones/%s", ionosBase, creds.ZoneID)
-	log.Printf("[IONOS] GET %s (PatchContent pre-fetch for record %s)", zoneURL, providerID)
+	slog.Info("fetching zone for PatchContent", "component", "dns", "provider", "ionos", "record_id", providerID)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", zoneURL, nil)
 	if err != nil {
@@ -255,11 +255,11 @@ func (p *IONOSProvider) PatchContent(ctx context.Context, creds Credentials, pro
 
 	resp, err := ionosClient.Do(req)
 	if err != nil {
-		log.Printf("[IONOS] PatchContent pre-fetch failed: %v", err)
+		slog.Error("PatchContent pre-fetch failed", "component", "dns", "provider", "ionos", "error", err)
 		return fmt.Errorf("failed to reach IONOS API: %w", err)
 	}
-	defer resp.Body.Close()
-	log.Printf("[IONOS] PatchContent pre-fetch response: %d", resp.StatusCode)
+	defer func() { _ = resp.Body.Close() }()
+	slog.Info("PatchContent pre-fetch response received", "component", "dns", "provider", "ionos", "status", resp.StatusCode)
 
 	var zone struct {
 		Records []struct {
@@ -276,7 +276,7 @@ func (p *IONOSProvider) PatchContent(ctx context.Context, creds Credentials, pro
 
 	for _, r := range zone.Records {
 		if r.ID == providerID {
-			log.Printf("[IONOS] PatchContent: updating record %s (%s %s) content %q -> %q", providerID, r.Type, r.Name, r.Content, content)
+			slog.Info("PatchContent updating record", "component", "dns", "provider", "ionos", "record_id", providerID, "record_type", r.Type, "name", r.Name, "old_content", r.Content, "new_content", content)
 			_, err = p.UpdateRecord(ctx, creds, providerID, RecordInput{
 				Name:    r.Name,
 				Type:    r.Type,
@@ -286,13 +286,13 @@ func (p *IONOSProvider) PatchContent(ctx context.Context, creds Credentials, pro
 			return err
 		}
 	}
-	log.Printf("[IONOS] PatchContent: record %s not found in zone (zone has %d records)", providerID, len(zone.Records))
+	slog.Warn("PatchContent record not found in zone", "component", "dns", "provider", "ionos", "record_id", providerID, "zone_record_count", len(zone.Records))
 	return fmt.Errorf("record %s not found in IONOS zone", providerID)
 }
 
 func (p *IONOSProvider) DeleteRecord(ctx context.Context, creds Credentials, providerID string) error {
 	url := fmt.Sprintf("%s/zones/%s/records/%s", ionosBase, creds.ZoneID, providerID)
-	log.Printf("[IONOS] DELETE %s (DeleteRecord)", url)
+	slog.Info("deleting record", "component", "dns", "provider", "ionos", "record_id", providerID)
 
 	req, err := http.NewRequestWithContext(ctx, "DELETE", url, nil)
 	if err != nil {
@@ -302,15 +302,15 @@ func (p *IONOSProvider) DeleteRecord(ctx context.Context, creds Credentials, pro
 
 	resp, err := ionosClient.Do(req)
 	if err != nil {
-		log.Printf("[IONOS] DeleteRecord request failed: %v", err)
+		slog.Error("DeleteRecord request failed", "component", "dns", "provider", "ionos", "error", err)
 		return fmt.Errorf("failed to reach IONOS API: %w", err)
 	}
-	defer resp.Body.Close()
-	log.Printf("[IONOS] DeleteRecord response: %d", resp.StatusCode)
+	defer func() { _ = resp.Body.Close() }()
+	slog.Info("DeleteRecord response received", "component", "dns", "provider", "ionos", "status", resp.StatusCode)
 
 	if resp.StatusCode == 404 {
 		// Already deleted at the provider — treat as success (idempotent)
-		log.Printf("[IONOS] DeleteRecord: record %s already gone (404), treating as success", providerID)
+		slog.Warn("DeleteRecord record already gone, treating as success", "component", "dns", "provider", "ionos", "record_id", providerID)
 		return nil
 	}
 	if resp.StatusCode != 200 && resp.StatusCode != 204 {

@@ -1,12 +1,13 @@
-<script>
+<script lang="ts">
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { api } from '$lib/api';
 	import { toastError } from '$lib/components/toast';
+	import type { HostConfig, Agent, DnsProvider } from '$lib/types';
 
-	let hosts = [];
-	let agents = [];
-	let providers = [];
+	let hosts: HostConfig[] = [];
+	let agents: Agent[] = [];
+	let providers: DnsProvider[] = [];
 	let loading = true;
 	let error = '';
 
@@ -49,28 +50,28 @@
 		} catch { toastError('Failed to load providers'); }
 	}
 
-	function getAgentName(host) {
+	function getAgentName(host: HostConfig) {
 		if (!host.agent_id) return '';
-		const agent = agents.find(a => a.id === host.agent_id);
+		const agent = agents.find(a => a.id === Number(host.agent_id));
 		return agent ? agent.name : 'Unknown';
 	}
 
-	function getAgentStatus(host) {
+	function getAgentStatus(host: HostConfig) {
 		if (!host.agent_id) return '';
-		const agent = agents.find(a => a.id === host.agent_id);
+		const agent = agents.find(a => a.id === Number(host.agent_id));
 		return agent ? agent.status : '';
 	}
 
-	function getProviderDomain(host) {
-		const p = providers.find(p => p.id === host.provider_id);
+	function getProviderDomain(host: HostConfig) {
+		const p = providers.find(prov => prov.id === host.provider_id);
 		return p ? p.domain : '';
 	}
 
-	function hasAdvancedConfig(host) {
+	function hasAdvancedConfig(host: HostConfig) {
 		return host.config && Object.keys(host.config).length > 0;
 	}
 
-	function toggleSort(key) {
+	function toggleSort(key: string) {
 		if (sortKey === key) {
 			sortDir = -sortDir;
 		} else {
@@ -88,8 +89,8 @@
 			getProviderDomain(h).toLowerCase().includes(q);
 	});
 
-	$: sorted = [...filtered].sort((a, b) => {
-		let va, vb;
+	$: sorted = [...filtered].sort((a: HostConfig, b: HostConfig) => {
+		let va: string | number, vb: string | number;
 		switch (sortKey) {
 			case 'domain':
 				va = a.domain; vb = b.domain;
@@ -114,7 +115,7 @@
 		}
 	});
 
-	function sortIcon(key) {
+	function sortIcon(key: string) {
 		if (sortKey === key) return sortDir === 1 ? '\u25B2' : '\u25BC';
 		return '\u21C5';
 	}

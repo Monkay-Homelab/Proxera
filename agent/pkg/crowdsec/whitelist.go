@@ -177,12 +177,10 @@ func (m *Manager) reloadCrowdSec() error {
 		return nil
 	}
 	cmd := exec.Command("systemctl", "reload", "crowdsec")
-	output, err := cmd.CombinedOutput()
-	if err != nil {
+	if output, err := cmd.CombinedOutput(); err != nil {
 		// Try restart if reload fails
 		cmd = exec.Command("systemctl", "restart", "crowdsec")
-		output, err = cmd.CombinedOutput()
-		if err != nil {
+		if output, err = cmd.CombinedOutput(); err != nil {
 			return fmt.Errorf("failed to reload crowdsec: %s", strings.TrimSpace(string(output)))
 		}
 	}

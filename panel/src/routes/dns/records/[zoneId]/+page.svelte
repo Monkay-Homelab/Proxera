@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
 	import { onMount } from 'svelte';
 	import { page } from '$app/stores';
 	import { goto } from '$app/navigation';
@@ -6,20 +6,21 @@
 	import { toastError } from '$lib/components/toast';
 	import { confirmDialog } from '$lib/components/confirm';
 	import { formatRelativeTime } from '$lib/utils';
+	import type { DnsRecord, DnsProvider, Agent } from '$lib/types';
 
 	let domain = '';
 	let providerType = '';
-	let records = [];
-	let agents = [];
+	let records: DnsRecord[] = [];
+	let agents: Agent[] = [];
 	let loading = true;
 	let syncing = false;
-	let lastSynced = null;
+	let lastSynced: Date | null = null;
 	let error = '';
-	let collapsed = {};
+	let collapsed: Record<string, boolean> = {};
 
 	// Modal state
 	let showRecordModal = false;
-	let editingRecord = null; // null = add mode, object = edit mode
+	let editingRecord: DnsRecord | null = null; // null = add mode, object = edit mode
 	let recordType = 'A';
 	let recordName = '';
 	let recordContent = '';
@@ -44,8 +45,8 @@
 	$: isCloudflare = providerType === 'cloudflare';
 	$: showProxied = isCloudflare && ['A', 'AAAA', 'CNAME'].includes(recordType);
 
-	function groupByType(recs) {
-		const map = {};
+	function groupByType(recs: DnsRecord[]) {
+		const map: Record<string, DnsRecord[]> = {};
 		for (const r of recs) {
 			if (!map[r.type]) map[r.type] = [];
 			map[r.type].push(r);
@@ -56,14 +57,14 @@
 				const bi = typeOrder.indexOf(b);
 				return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
 			})
-			.map(type => ({ type, records: map[type].sort((a, b) => {
+			.map(type => ({ type, records: map[type].sort((a: DnsRecord, b: DnsRecord) => {
 			if (a.name === domain) return -1;
 			if (b.name === domain) return 1;
 			return a.name.localeCompare(b.name);
 		}) }));
 	}
 
-	function toggleSection(type) {
+	function toggleSection(type: string) {
 		collapsed[type] = !collapsed[type];
 		collapsed = collapsed;
 	}
@@ -76,7 +77,7 @@
 			]);
 			if (provRes.ok) {
 				const providers = await provRes.json();
-				const match = providers.find(p => p.id === parseInt(providerId));
+				const match = providers.find((p: DnsProvider) => p.id === parseInt(providerId ?? ''));
 				if (match) {
 					domain = match.domain;
 					providerType = match.provider;
@@ -99,8 +100,8 @@
 			const res = await api(`/api/dns/providers/${providerId}/records`);
 			if (res.ok) {
 				records = await res.json();
-				if (records.length > 0 && records[0].last_synced) {
-					lastSynced = new Date(records[0].last_synced);
+				if (records.length > 0 && (records[0] as any).last_synced) {
+					lastSynced = new Date((records[0] as any).last_synced);
 				}
 			} else {
 				const data = await res.json();
@@ -144,7 +145,7 @@
 		showRecordModal = true;
 	}
 
-	function openEditModal(record) {
+	function openEditModal(record: DnsRecord) {
 		editingRecord = record;
 		recordType = record.type;
 		recordName = record.name;
@@ -203,7 +204,7 @@
 		}
 	}
 
-	async function deleteRecord(record) {
+	async function deleteRecord(record: DnsRecord) {
 		if (!await confirmDialog(`Delete ${record.type} record "${record.name}"?`, { title: 'Delete Record', confirmLabel: 'Delete', danger: true })) return;
 
 		try {
@@ -219,8 +220,8 @@
 		}
 	}
 
-	async function assignAgent(record, event) {
-		const val = event.target.value;
+	async function assignAgent(record: DnsRecord, event: Event) {
+		const val = (event.target as HTMLSelectElement).value;
 		const agentId = val === '' ? null : parseInt(val);
 
 		try {
@@ -241,9 +242,9 @@
 		}
 	}
 
-	let syncingRecord = null;
+	let syncingRecord: string | null = null;
 
-	async function ddnsSync(record) {
+	async function ddnsSync(record: DnsRecord) {
 		syncingRecord = record.id;
 		try {
 			const res = await api(`/api/dns/providers/${providerId}/records/${record.id}/ddns-sync`, {
@@ -264,16 +265,16 @@
 	}
 
 	// Build a map of agentId → agent for quick lookup
-	$: agentMap = Object.fromEntries(agents.map(a => [a.id, a]));
+	$: agentMap = Object.fromEntries(agents.map((a: Agent) => [a.id, a]));
 
-	function ddnsStatus(record) {
+	function ddnsStatus(record: DnsRecord) {
 		if (!record.agent_id) return null;
 		const agent = agentMap[record.agent_id];
 		if (!agent || !agent.wan_ip) return 'unknown';
 		return record.content === agent.wan_ip ? 'synced' : 'pending';
 	}
 
-	function formatTTL(ttl) {
+	function formatTTL(ttl: number) {
 		if (ttl === 1) return 'Auto';
 		if (ttl < 60) return `${ttl}s`;
 		if (ttl < 3600) return `${Math.floor(ttl / 60)}m`;
@@ -282,8 +283,8 @@
 	}
 
 
-	function typeLabel(type) {
-		const labels = {
+	function typeLabel(type: string) {
+		const labels: Record<string, string> = {
 			A: 'A Records', AAAA: 'AAAA Records', CNAME: 'CNAME Records',
 			MX: 'MX Records', TXT: 'TXT Records', NS: 'NS Records',
 			SRV: 'SRV Records', CAA: 'CAA Records', PTR: 'PTR Records', SOA: 'SOA Records',
@@ -291,8 +292,8 @@
 		return labels[type] || `${type} Records`;
 	}
 
-	function typeBadgeClass(type) {
-		const map = {
+	function typeBadgeClass(type: string) {
+		const map: Record<string, string> = {
 			A: 'type-a', AAAA: 'type-aaaa', CNAME: 'type-cname',
 			MX: 'type-mx', TXT: 'type-txt', NS: 'type-ns',
 			SRV: 'type-srv', CAA: 'type-caa', PTR: 'type-ptr', SOA: 'type-soa',
@@ -319,7 +320,7 @@
 				<p class="subtitle">
 					{records.length} record{records.length !== 1 ? 's' : ''}
 					{#if lastSynced}
-						<span class="sync-info">synced {formatRelativeTime(lastSynced)}</span>
+						<span class="sync-info">synced {formatRelativeTime(lastSynced.toISOString())}</span>
 					{/if}
 				</p>
 			</div>

@@ -169,7 +169,7 @@ func (b *BouncerSync) writeBlocklist() {
 	sb.WriteString("geo $crowdsec_blocklist {\n")
 	sb.WriteString("    default 0;\n")
 	for _, ip := range sorted {
-		sb.WriteString(fmt.Sprintf("    %s 1;\n", ip))
+		fmt.Fprintf(&sb, "    %s 1;\n", ip)
 	}
 	sb.WriteString("}\n")
 

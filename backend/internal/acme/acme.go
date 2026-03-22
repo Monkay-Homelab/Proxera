@@ -9,7 +9,7 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
-	"log"
+	"log/slog"
 
 	proxeraCrypto "github.com/proxera/backend/internal/crypto"
 	"github.com/proxera/backend/internal/database"
@@ -56,7 +56,7 @@ func GetOrCreateAccountKey(userID int) (crypto.PrivateKey, error) {
 			return nil, fmt.Errorf("failed to decode ACME key PEM")
 		}
 		if len(rest) > 0 {
-			log.Printf("[ACME] Warning: trailing data after PEM block (%d bytes)", len(rest))
+			slog.Warn("trailing data after PEM block", "component", "acme", "trailing_bytes", len(rest))
 		}
 		key, err := x509.ParseECPrivateKey(block.Bytes)
 		if err != nil {
@@ -90,7 +90,7 @@ func GetOrCreateAccountKey(userID int) (crypto.PrivateKey, error) {
 		return nil, fmt.Errorf("failed to store ACME key: %w", err)
 	}
 
-	log.Printf("[ACME] Generated new account key for user %d", userID)
+	slog.Info("generated new account key", "component", "acme", "user_id", userID)
 	return key, nil
 }
 
@@ -106,7 +106,7 @@ func IssueCertificate(email string, accountKey crypto.PrivateKey, domains []stri
 	// Use staging if configured in settings or env
 	if settings.Get("ACME_STAGING", "false") == "true" {
 		config.CADirURL = "https://acme-staging-v02.api.letsencrypt.org/directory"
-		log.Println("[ACME] Using staging environment")
+		slog.Info("using staging environment", "component", "acme")
 	}
 
 	client, err := lego.NewClient(config)
@@ -115,7 +115,7 @@ func IssueCertificate(email string, accountKey crypto.PrivateKey, domains []stri
 	}
 
 	// Configure the DNS-01 provider based on the provider type
-	log.Printf("[ACME] Configuring DNS-01 challenge via %s", providerType)
+	slog.Info("configuring DNS-01 challenge", "component", "acme", "provider", providerType)
 	switch providerType {
 	case "cloudflare":
 		cfg := legoCloudflare.NewDefaultConfig()

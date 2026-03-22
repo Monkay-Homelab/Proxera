@@ -6,7 +6,7 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -174,7 +174,7 @@ func (m *Manager) RegisterLocalAgent() (string, error) {
 	).Scan(&agentID)
 	if err == nil {
 		m.agentID = agentID
-		log.Printf("[local-agent] Found existing local agent: %s", agentID)
+		slog.Info("Found existing local agent", "component", "local-agent", "agent_id", agentID)
 		return agentID, nil
 	}
 
@@ -187,20 +187,18 @@ func (m *Manager) RegisterLocalAgent() (string, error) {
 		return "", fmt.Errorf("no admin user found; register an admin account first")
 	}
 
-	// Create local agent with a placeholder api_key (required NOT NULL column)
 	agentID = fmt.Sprintf("local-%d", time.Now().UnixNano())
-	localAPIKey := fmt.Sprintf("local_%s", agentID)
 	_, err = database.DB.Exec(ctx,
-		`INSERT INTO agents (agent_id, name, user_id, api_key, status, is_local, version, os, arch, created_at, updated_at, last_heartbeat)
-		 VALUES ($1, $2, $3, $4, 'online', true, $5, $6, $7, NOW(), NOW(), NOW())`,
-		agentID, "Local (Control Node)", userID, localAPIKey, version.Version, runtime.GOOS, runtime.GOARCH,
+		`INSERT INTO agents (agent_id, name, user_id, status, is_local, version, os, arch, created_at, updated_at, last_heartbeat)
+		 VALUES ($1, $2, $3, 'online', true, $4, $5, $6, NOW(), NOW(), NOW())`,
+		agentID, "Local (Control Node)", userID, version.Version, runtime.GOOS, runtime.GOARCH,
 	)
 	if err != nil {
 		return "", fmt.Errorf("failed to create local agent: %w", err)
 	}
 
 	m.agentID = agentID
-	log.Printf("[local-agent] Created local agent: %s (owner: user %d)", agentID, userID)
+	slog.Info("Created local agent", "component", "local-agent", "agent_id", agentID, "owner_user_id", userID)
 	return agentID, nil
 }
 
@@ -214,7 +212,7 @@ func (m *Manager) Start() {
 		).Scan(&dbInterval)
 		if err == nil && dbInterval >= 10 {
 			m.metricsInterval = time.Duration(dbInterval) * time.Second
-			log.Printf("[local-agent] Metrics interval from DB: %ds", dbInterval)
+			slog.Info("Metrics interval from DB", "component", "local-agent", "agent_id", m.agentID, "interval_seconds", dbInterval)
 		}
 	}
 
@@ -224,7 +222,7 @@ func (m *Manager) Start() {
 	if m.bouncerSync != nil {
 		m.bouncerSync.Start()
 	}
-	log.Println("[local-agent] Started local agent manager")
+	slog.Info("Started local agent manager", "component", "local-agent", "agent_id", m.agentID)
 }
 
 // Stop gracefully shuts down the local agent.
@@ -234,7 +232,7 @@ func (m *Manager) Stop() {
 	if m.bouncerSync != nil {
 		m.bouncerSync.Stop()
 	}
-	log.Println("[local-agent] Stopped local agent manager")
+	slog.Info("Stopped local agent manager", "component", "local-agent", "agent_id", m.agentID)
 }
 
 // heartbeatLoop periodically updates the local agent's status in the database.
@@ -268,7 +266,7 @@ func (m *Manager) sendHeartbeat() {
 
 	// Check for WAN IP change and trigger DDNS update
 	if wanIP != "" && wanIP != m.lastWanIP && m.lastWanIP != "" && m.ddnsUpdate != nil {
-		log.Printf("[local-agent] WAN IP changed: %s -> %s, triggering DDNS update", m.lastWanIP, wanIP)
+		slog.Info("WAN IP changed, triggering DDNS update", "component", "local-agent", "agent_id", m.agentID, "old_ip", m.lastWanIP, "new_ip", wanIP)
 		var agentDBID, agentUserID int
 		err := database.DB.QueryRow(context.Background(),
 			`SELECT id, user_id FROM agents WHERE agent_id = $1`, m.agentID,
@@ -301,7 +299,7 @@ func (m *Manager) sendHeartbeat() {
 		hostCount, version.Version, runtime.GOOS, runtime.GOARCH, nginxVer, csInstalled, lanIP, wanIP, m.agentID,
 	)
 	if err != nil {
-		log.Printf("[local-agent] heartbeat update failed: %v", err)
+		slog.Error("Heartbeat update failed", "component", "local-agent", "agent_id", m.agentID, "error", err)
 	}
 }
 
@@ -393,9 +391,9 @@ func (m *Manager) collectAndInsertMetrics() {
 	}
 
 	if err := m.metricsInsert(m.agentID, generic); err != nil {
-		log.Printf("[local-agent] metrics insert failed: %v", err)
+		slog.Error("Metrics insert failed", "component", "local-agent", "agent_id", m.agentID, "error", err)
 	} else {
-		log.Printf("[local-agent] Inserted %d metrics bucket(s)", len(buckets))
+		slog.Info("Inserted metrics buckets", "component", "local-agent", "agent_id", m.agentID, "bucket_count", len(buckets))
 	}
 }
 

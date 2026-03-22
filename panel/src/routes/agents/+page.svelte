@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { PUBLIC_API_URL } from '$env/static/public';
@@ -7,24 +7,30 @@
 	import { toastError, toastSuccess } from '$lib/components/toast';
 	import { confirmDialog } from '$lib/components/confirm';
 	import { formatDateTime, formatRelativeTime, copyToClipboard } from '$lib/utils';
+	import type { Agent } from '$lib/types';
 
-	let agents = [];
+	interface RegistrationResponse {
+		agent_id: string;
+		api_key: string;
+	}
+
+	let agents: Agent[] = [];
 	let loading = true;
-	let error = null;
+	let error: string | null = null;
 	let showRegisterModal = false;
 	let agentName = '';
-	let registrationData = null;
+	let registrationData: RegistrationResponse | null = null;
 	let registerError = '';
-	let updatingAgents = new Set();
-	let deployingAgents = new Set();
-	let upgradingNginxAgents = new Set();
+	let updatingAgents = new Set<string>();
+	let deployingAgents = new Set<string>();
+	let upgradingNginxAgents = new Set<string>();
 	let latestVersion = '';
-	let expandedAgents = new Set();
-	let pendingTimeout = null;
-	let renamingAgentId = null;
+	let expandedAgents = new Set<string>();
+	let pendingTimeout: ReturnType<typeof setTimeout> | null = null;
+	let renamingAgentId: string | null = null;
 	let renameValue = '';
 
-	function toggleExpand(agentId) {
+	function toggleExpand(agentId: string) {
 		if (expandedAgents.has(agentId)) { expandedAgents.delete(agentId); }
 		else { expandedAgents.add(agentId); }
 		expandedAgents = expandedAgents;
@@ -55,7 +61,7 @@
 			if (!response.ok) throw new Error('Failed to fetch agents');
 			agents = await response.json();
 			loading = false;
-		} catch (err) { error = err.message; loading = false; }
+		} catch (err) { error = err instanceof Error ? err.message : String(err); loading = false; }
 	}
 
 	async function registerAgent() {
@@ -76,20 +82,20 @@
 			agentName = '';
 			await fetchAgents();
 			navRefresh.update(n => n + 1);
-		} catch (err) { registerError = err.message; }
+		} catch (err) { registerError = err instanceof Error ? err.message : String(err); }
 	}
 
-	async function deleteAgent(agentId) {
+	async function deleteAgent(agentId: string) {
 		if (!await confirmDialog('Are you sure you want to delete this agent?', { title: 'Delete Agent', confirmLabel: 'Delete', danger: true })) return;
 		try {
 			const response = await api(`/api/agents/${agentId}`, { method: 'DELETE' });
 			if (!response.ok) throw new Error('Failed to delete agent');
 			await fetchAgents();
 			navRefresh.update(n => n + 1);
-		} catch (err) { error = err.message; }
+		} catch (err) { error = err instanceof Error ? err.message : String(err); }
 	}
 
-	async function updateAgent(agentId) {
+	async function updateAgent(agentId: string) {
 		if (!await confirmDialog('Update this agent to the latest version? The agent will restart automatically.', { title: 'Update Agent', confirmLabel: 'Update' })) return;
 		updatingAgents.add(agentId); updatingAgents = updatingAgents;
 		try {
@@ -102,11 +108,11 @@
 			const result = await response.json();
 			toastSuccess(result.message || 'Update command sent successfully');
 			pendingTimeout = setTimeout(() => { fetchAgents(); }, 5000);
-		} catch (err) { toastError('Failed to update agent: ' + err.message); }
+		} catch (err) { toastError('Failed to update agent: ' + (err instanceof Error ? err.message : String(err))); }
 		finally { updatingAgents.delete(agentId); updatingAgents = updatingAgents; }
 	}
 
-	async function deployAndReload(agentId) {
+	async function deployAndReload(agentId: string) {
 		deployingAgents.add(agentId); deployingAgents = deployingAgents;
 		try {
 			const deployRes = await api(`/api/agents/${agentId}/deploy`, { method: 'POST' });
@@ -118,16 +124,16 @@
 			if (!reloadRes.ok) throw new Error(reloadData.error || 'Reload failed');
 
 			toastSuccess('Deploy & reload completed successfully');
-		} catch (err) { toastError('Deploy & reload failed: ' + err.message); }
+		} catch (err) { toastError('Deploy & reload failed: ' + (err instanceof Error ? err.message : String(err))); }
 		finally { deployingAgents.delete(agentId); deployingAgents = deployingAgents; }
 	}
 
-	function truncateAgentId(agentId) {
+	function truncateAgentId(agentId: string) {
 		if (!agentId || agentId.length <= 22) return agentId;
 		return agentId.substring(0, 22) + '...';
 	}
 
-	function isNginxOutdated(version) {
+	function isNginxOutdated(version: string) {
 		if (!version) return false;
 		const parts = version.split('.').map(Number);
 		if (parts[0] < 1) return true;
@@ -135,7 +141,7 @@
 		return false;
 	}
 
-	async function upgradeNginx(agentId) {
+	async function upgradeNginx(agentId: string) {
 		if (!await confirmDialog('Upgrade nginx to the latest version from nginx.org? This may cause a brief restart.', { title: 'Upgrade Nginx', confirmLabel: 'Upgrade' })) return;
 		upgradingNginxAgents.add(agentId); upgradingNginxAgents = upgradingNginxAgents;
 		try {
@@ -148,11 +154,11 @@
 			const result = await response.json();
 			toastSuccess(result.message || 'Nginx upgrade command sent');
 			pendingTimeout = setTimeout(() => { fetchAgents(); }, 15000);
-		} catch (err) { toastError('Nginx upgrade failed: ' + err.message); }
+		} catch (err) { toastError('Nginx upgrade failed: ' + (err instanceof Error ? err.message : String(err))); }
 		finally { upgradingNginxAgents.delete(agentId); upgradingNginxAgents = upgradingNginxAgents; }
 	}
 
-	function startRename(agent) {
+	function startRename(agent: Agent) {
 		renamingAgentId = agent.agent_id;
 		renameValue = agent.name;
 	}
@@ -162,7 +168,7 @@
 		renameValue = '';
 	}
 
-	async function doRename(agentId) {
+	async function doRename(agentId: string) {
 		const name = renameValue.trim();
 		if (!name) return;
 		try {
@@ -174,19 +180,19 @@
 			if (!response.ok) { const d = await response.json(); throw new Error(d.error || 'Failed to rename'); }
 			agents = agents.map(a => a.agent_id === agentId ? { ...a, name } : a);
 			toastSuccess('Agent renamed');
-		} catch (err) { toastError('Rename failed: ' + err.message); }
+		} catch (err) { toastError('Rename failed: ' + (err instanceof Error ? err.message : String(err))); }
 		finally { cancelRename(); }
 	}
 
-	async function setMetricsInterval(agentId, e) {
-		const seconds = parseInt(e.target.value);
+	async function setMetricsInterval(agentId: string, e: Event) {
+		const seconds = parseInt((e.target as HTMLSelectElement).value);
 		try {
 			const response = await api(`/api/agents/${agentId}/metrics-interval`, {
 				method: 'POST', headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({ interval: seconds })
 			});
 			if (!response.ok) { const data = await response.json(); throw new Error(data.error || 'Failed to set interval'); }
-		} catch (err) { toastError('Failed to set metrics interval: ' + err.message); }
+		} catch (err) { toastError('Failed to set metrics interval: ' + (err instanceof Error ? err.message : String(err))); }
 	}
 </script>
 
@@ -339,7 +345,7 @@
 				<div class="modal-section">
 					<div class="section-top">
 						<span class="section-label">Installation Command</span>
-						<button class="btn-copy" on:click={() => copyToClipboard(`curl -sSL ${PUBLIC_API_URL}/install.sh | sudo bash -s -- ${registrationData.agent_id} ${registrationData.api_key} ${PUBLIC_API_URL}`)}>
+						<button class="btn-copy" on:click={() => copyToClipboard(`curl -sSL ${PUBLIC_API_URL}/install.sh | sudo bash -s -- ${registrationData!.agent_id} ${registrationData!.api_key} ${PUBLIC_API_URL}`)}>
 							<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
 							Copy
 						</button>
@@ -370,14 +376,14 @@
 							<span class="cred-label">Agent ID</span>
 							<div class="cred-val">
 								<code>{registrationData.agent_id}</code>
-								<button class="btn-copy-sm" on:click={() => copyToClipboard(registrationData.agent_id)}>Copy</button>
+								<button class="btn-copy-sm" on:click={() => copyToClipboard(registrationData!.agent_id)}>Copy</button>
 							</div>
 						</div>
 						<div class="cred-row">
 							<span class="cred-label">API Key</span>
 							<div class="cred-val">
 								<code>{registrationData.api_key}</code>
-								<button class="btn-copy-sm" on:click={() => copyToClipboard(registrationData.api_key)}>Copy</button>
+								<button class="btn-copy-sm" on:click={() => copyToClipboard(registrationData!.api_key)}>Copy</button>
 							</div>
 						</div>
 					</div>

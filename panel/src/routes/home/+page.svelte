@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { goto } from '$app/navigation';
 	import { api } from '$lib/api';
 	import { toastError } from '$lib/components/toast';
 	import type { User, Agent } from '$lib/types';

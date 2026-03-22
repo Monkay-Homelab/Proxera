@@ -234,10 +234,41 @@ func ValidateHost(host *types.Host) error {
 		}
 	}
 
-	// Validate custom nginx config - block dangerous directives
+	// Validate custom nginx config - enforce size limits and block dangerous directives
 	if cfg.CustomNginxConfig != "" {
+		const maxCustomConfigLength = 16384 // 16 KB
+		const maxCustomConfigLines = 200
+
+		if len(cfg.CustomNginxConfig) > maxCustomConfigLength {
+			return fmt.Errorf("custom nginx config exceeds maximum length of %d characters", maxCustomConfigLength)
+		}
+
+		lineCount := strings.Count(cfg.CustomNginxConfig, "\n") + 1
+		if lineCount > maxCustomConfigLines {
+			return fmt.Errorf("custom nginx config exceeds maximum of %d lines", maxCustomConfigLines)
+		}
+
 		lower := strings.ToLower(cfg.CustomNginxConfig)
-		dangerous := []string{"lua_", "load_module", "include ", "ssl_certificate", "root ", "alias "}
+		dangerous := []string{
+			"lua_",
+			"load_module",
+			"include ",
+			"ssl_certificate",
+			"root ",
+			"alias ",
+			"proxy_pass ",
+			"upstream ",
+			"server ",
+			"listen ",
+			"resolver ",
+			"perl",
+			"js_",
+			"wasm_",
+			"env ",
+			"error_log ",
+			"set $",
+			"rewrite_log",
+		}
 		for _, d := range dangerous {
 			if strings.Contains(lower, d) {
 				return fmt.Errorf("custom nginx config contains disallowed directive: %s", d)

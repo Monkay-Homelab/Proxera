@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
-	"log"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -46,32 +46,32 @@ func StartCertRenewalJob() {
 func renewExpiring() {
 	certs, err := findExpiringCerts()
 	if err != nil {
-		log.Printf("[CertRenewal] Failed to find expiring certs: %v", err)
+		slog.Error("failed to find expiring certs", "component", "cert-renewal", "error", err)
 		return
 	}
 
 	if len(certs) == 0 {
-		log.Println("[CertRenewal] No certificates need renewal")
+		slog.Info("no certificates need renewal", "component", "cert-renewal")
 		return
 	}
 
-	log.Printf("[CertRenewal] Found %d certificate(s) to renew", len(certs))
+	slog.Info("found certificates to renew", "component", "cert-renewal", "count", len(certs))
 
 	for _, cert := range certs {
 		if err := renewCert(cert); err != nil {
-			log.Printf("[CertRenewal] Failed to renew cert %d (%s): %v", cert.ID, cert.Domain, err)
+			slog.Error("failed to renew cert", "component", "cert-renewal", "cert_id", cert.ID, "domain", cert.Domain, "error", err)
 			markCertError(cert.ID, err.Error())
 
 			// Trigger cert renewal failure alert
 			var expiresAt time.Time
-			database.DB.QueryRow(context.Background(),
+			_ = database.DB.QueryRow(context.Background(),
 				`SELECT COALESCE(expires_at, '0001-01-01') FROM certificates WHERE id = $1`, cert.ID,
 			).Scan(&expiresAt)
 			go triggerCertRenewalFailedAlert(cert.UserID, cert.ID, cert.Domain, expiresAt, err.Error())
 
 			continue
 		}
-		log.Printf("[CertRenewal] Successfully renewed cert %d (%s)", cert.ID, cert.Domain)
+		slog.Info("successfully renewed cert", "component", "cert-renewal", "cert_id", cert.ID, "domain", cert.Domain)
 
 		// Resolve any open cert alerts for this domain
 		go func(c expiringCert) {
@@ -107,7 +107,7 @@ func findExpiringCerts() ([]expiringCert, error) {
 		var c expiringCert
 		if err := rows.Scan(&c.ID, &c.UserID, &c.ProviderID, &c.Domain, &c.SAN,
 			&c.Email, &c.ProviderName, &c.APIKey, &c.APISecret, &c.ZoneID); err != nil {
-			log.Printf("[CertRenewal] Failed to scan cert row: %v", err)
+			slog.Error("failed to scan cert row", "component", "cert-renewal", "error", err)
 			continue
 		}
 		certs = append(certs, c)
@@ -230,7 +230,7 @@ func redeployHostsForCert(cert expiringCert) {
 		WHERE h.certificate_id = $1
 		  AND h.agent_id IS NOT NULL`, cert.ID)
 	if err != nil {
-		log.Printf("[CertRenewal] Failed to query hosts for cert %d: %v", cert.ID, err)
+		slog.Error("failed to query hosts for cert", "component", "cert-renewal", "cert_id", cert.ID, "error", err)
 		return
 	}
 	defer rows.Close()
@@ -242,12 +242,12 @@ func redeployHostsForCert(cert expiringCert) {
 		var configBytes []byte
 		var agentDBID int
 		if err := rows.Scan(&domain, &upstreamURL, &ssl, &ws, &certID, &configBytes, &agentDBID); err != nil {
-			log.Printf("[CertRenewal] Failed to scan host row: %v", err)
+			slog.Error("failed to scan host row", "component", "cert-renewal", "error", err)
 			continue
 		}
 
 		var config *HostAdvancedConfig
-		if configBytes != nil && len(configBytes) > 0 && string(configBytes) != "{}" {
+		if len(configBytes) > 0 && string(configBytes) != "{}" {
 			config = &HostAdvancedConfig{}
 			if err := json.Unmarshal(configBytes, config); err != nil {
 				config = nil
@@ -255,11 +255,11 @@ func redeployHostsForCert(cert expiringCert) {
 		}
 
 		if err := deployHostToAgent(cert.UserID, agentDBID, domain, upstreamURL, ssl, ws, certID, config); err != nil {
-			log.Printf("[CertRenewal] Failed to redeploy host %s after cert renewal: %v", domain, err)
+			slog.Error("failed to redeploy host after cert renewal", "component", "cert-renewal", "domain", domain, "error", err)
 		}
 	}
 	if err := rows.Err(); err != nil {
-		log.Printf("[CertRenewal] Error iterating hosts for cert %d: %v", cert.ID, err)
+		slog.Error("error iterating hosts for cert", "component", "cert-renewal", "cert_id", cert.ID, "error", err)
 	}
 }
 
@@ -267,6 +267,6 @@ func markCertError(certID int, reason string) {
 	if _, err := database.DB.Exec(context.Background(),
 		`UPDATE certificates SET status = 'error', updated_at = NOW() WHERE id = $1`,
 		certID); err != nil {
-		log.Printf("[CertRenewal] Failed to mark cert %d as error: %v", certID, err)
+		slog.Error("failed to mark cert as error", "component", "cert-renewal", "cert_id", certID, "error", err)
 	}
 }

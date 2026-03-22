@@ -336,7 +336,7 @@ func (s *Setup) EnsureNginxRunning() error {
 
 // RunSetup performs complete nginx setup
 func (s *Setup) RunSetup() error {
-	fmt.Println("[INFO] Setting up Proxera agent...\n")
+	fmt.Println("[INFO] Setting up Proxera agent...")
 
 	// Check if nginx is installed
 	installed, err := s.CheckNginx()

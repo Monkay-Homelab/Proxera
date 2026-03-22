@@ -5,12 +5,14 @@
 package main
 
 import (
+	"context"
 	"embed"
 	"fmt"
 	"io/fs"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"strings"
 	"syscall"
@@ -35,33 +37,33 @@ var panelFS embed.FS
 
 func main() {
 	logging.Setup()
-	log.Println("Proxera Control Node starting...")
+	slog.Info("Proxera Control Node starting...", "component", "control")
 
 	// Load environment variables
 	if err := godotenv.Load(".env"); err != nil {
 		if err := godotenv.Load("../../.env"); err != nil {
-			log.Println("No .env file found, using environment variables")
+			slog.Info("no .env file found, using environment variables", "component", "control")
 		}
 	}
 
 	// Validate required secrets
 	jwtSecret := os.Getenv("JWT_SECRET")
 	if len(jwtSecret) < 32 {
-		log.Fatal("JWT_SECRET must be set and at least 32 characters")
+		slog.Error("JWT_SECRET must be set and at least 32 characters", "component", "control")
+		os.Exit(1)
 	}
 
 	// Connect to database
 	if err := database.Connect(); err != nil {
-		log.Fatal("Failed to connect to database:", err)
+		slog.Error("failed to connect to database", "component", "control", "error", err)
+		os.Exit(1)
 	}
 
 	// Initialize database tables
 	if err := database.Initialize(); err != nil {
-		log.Fatal("Failed to initialize database:", err)
+		slog.Error("failed to initialize database", "component", "control", "error", err)
+		os.Exit(1)
 	}
-
-	// Migrate existing plaintext API keys to hashed
-	handlers.MigrateAPIKeyHashes()
 
 	// Start WebSocket hub for remote agent connections
 	handlers.StartHub()
@@ -72,7 +74,7 @@ func main() {
 		go func() {
 			defer func() {
 				if r := recover(); r != nil {
-					log.Printf("[PANIC] %s crashed: %v — restarting in 5s", name, r)
+					slog.Error("background job crashed, restarting in 5s", "component", "control", "job", name, "panic", r)
 					time.Sleep(5 * time.Second)
 					safeGo(name, fn)
 				}
@@ -83,29 +85,31 @@ func main() {
 	safeGo("cert-renewal", handlers.StartCertRenewalJob)
 	safeGo("alert-worker", handlers.StartAlertWorker)
 	safeGo("cooldown-cleanup", notifications.StartCooldownCleanup)
+	safeGo("token-cleanup", startTokenCleanupJob)
 
 	// --- First-run detection ---
 	isDocker := os.Getenv("PROXERA_DOCKER") == "true"
 	status := localagent.DetectSystem()
-	log.Printf("[system] nginx: installed=%v version=%s running=%v", status.NginxInstalled, status.NginxVersion, status.NginxRunning)
-	log.Printf("[system] crowdsec: installed=%v running=%v", status.CrowdSecInstalled, status.CrowdSecRunning)
+	slog.Info("nginx status", "component", "system", "installed", status.NginxInstalled, "version", status.NginxVersion, "running", status.NginxRunning)
+	slog.Info("crowdsec status", "component", "system", "installed", status.CrowdSecInstalled, "running", status.CrowdSecRunning)
 	if isDocker {
-		log.Println("[system] Running in Docker mode — nginx managed via external container")
+		slog.Info("running in Docker mode, nginx managed via external container", "component", "system")
+		safeGo("logrotate", startLogRotateJob)
 	}
 
 	// In Docker mode, nginx is in a separate container — always enable local agent
 	enableLocalAgent := status.NginxInstalled || isDocker
 
 	if !enableLocalAgent {
-		log.Println("[system] WARNING: nginx is not installed. Local proxy management will be unavailable.")
-		log.Println("[system] Install nginx 1.25+ and restart the control node to enable local management.")
+		slog.Warn("nginx is not installed, local proxy management will be unavailable", "component", "system")
+		slog.Warn("install nginx 1.25+ and restart the control node to enable local management", "component", "system")
 	}
 
 	// --- Local agent setup ---
 	var localMgr *localagent.Manager
 	if enableLocalAgent {
 		if err := localagent.EnsureDirectories(); err != nil {
-			log.Printf("[local-agent] Warning: failed to create directories: %v", err)
+			slog.Warn("failed to create directories", "component", "local-agent", "error", err)
 		}
 
 		cfg := localagent.DefaultConfig()
@@ -166,15 +170,15 @@ func main() {
 				return err
 			}
 			if err := handlers.InsertVisitorIPs(agentID, converted); err != nil {
-				log.Printf("[local-agent] Failed to insert visitor IPs: %v", err)
+				slog.Error("failed to insert visitor IPs", "component", "local-agent", "error", err)
 			}
 			return nil
 		})
 
 		// Register local agent (deferred until first admin user exists)
 		if _, err := localMgr.RegisterLocalAgent(); err != nil {
-			log.Printf("[local-agent] Deferred registration: %v", err)
-			log.Println("[local-agent] Local agent will register after first admin account is created.")
+			slog.Info("deferred local agent registration", "component", "local-agent", "error", err)
+			slog.Info("local agent will register after first admin account is created", "component", "local-agent")
 		} else {
 			localMgr.Start()
 		}
@@ -199,15 +203,11 @@ func main() {
 	// Setup API routes (same as standalone backend)
 	api.SetupRoutes(app)
 
-	// --- System status endpoint ---
-	app.Get("/api/system/status", func(c *fiber.Ctx) error {
-		return c.JSON(localagent.DetectSystem())
-	})
-
 	// --- Embedded panel ---
 	panelRoot, err := fs.Sub(panelFS, "panel")
 	if err != nil {
-		log.Fatal("Failed to create panel sub-filesystem:", err)
+		slog.Error("failed to create panel sub-filesystem", "component", "control", "error", err)
+		os.Exit(1)
 	}
 
 	// Serve static assets from the embedded panel
@@ -238,23 +238,83 @@ func main() {
 	}
 
 	addr := fmt.Sprintf("%s:%s", host, port)
-	log.Printf("Control Node listening on %s", addr)
+	slog.Info("control node listening", "component", "control", "address", addr)
 
 	// Graceful shutdown
 	go func() {
 		sigChan := make(chan os.Signal, 1)
 		signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 		sig := <-sigChan
-		log.Printf("Received %s, shutting down gracefully...", sig)
+		slog.Info("received signal, shutting down gracefully", "component", "control", "signal", sig.String())
 		if localMgr != nil {
 			localMgr.Stop()
 		}
+		handlers.DrainWebSocketConnections()
 		if err := app.Shutdown(); err != nil {
-			log.Printf("Error during shutdown: %v", err)
+			slog.Error("error during shutdown", "component", "control", "error", err)
 		}
+		database.DB.Close()
+		slog.Info("database connection pool closed", "component", "control")
 	}()
 
 	if err := app.Listen(addr); err != nil {
-		log.Fatal("Failed to start server:", err)
+		slog.Error("failed to start server", "component", "control", "error", err)
+		os.Exit(1)
+	}
+}
+
+// startLogRotateJob triggers nginx log rotation daily via docker exec.
+// Only intended for Docker mode where the nginx container has the logrotate
+// config mounted at /etc/logrotate.d/nginx.
+func startLogRotateJob() {
+	const container = "proxera-nginx"
+	const interval = 24 * time.Hour
+
+	slog.Info("starting daily nginx log rotation job", "component", "logrotate")
+
+	// Run once on startup
+	runLogRotate(container)
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		runLogRotate(container)
+	}
+}
+
+func runLogRotate(container string) {
+	slog.Info("running nginx log rotation", "component", "logrotate")
+	cmd := exec.Command("docker", "exec", container, "logrotate", "/etc/logrotate.d/nginx")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		slog.Error("failed to rotate nginx logs", "component", "logrotate", "error", err, "output", string(output))
+	} else {
+		slog.Info("nginx log rotation completed successfully", "component", "logrotate")
+	}
+}
+
+// startTokenCleanupJob periodically deletes expired password reset tokens.
+// Tokens have a 1-hour TTL but are only cleaned up per-user on new reset
+// requests. This job removes all tokens older than 24 hours every hour.
+func startTokenCleanupJob() {
+	const interval = 1 * time.Hour
+
+	slog.Info("starting password reset token cleanup job", "component", "token-cleanup")
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		result, err := database.DB.Exec(ctx,
+			"DELETE FROM password_reset_tokens WHERE created_at < NOW() - INTERVAL '24 hours'")
+		cancel()
+		if err != nil {
+			slog.Error("failed to cleanup expired reset tokens", "component", "token-cleanup", "error", err)
+			continue
+		}
+		if result.RowsAffected() > 0 {
+			slog.Info("cleaned up expired reset tokens", "component", "token-cleanup", "deleted", result.RowsAffected())
+		}
 	}
 }

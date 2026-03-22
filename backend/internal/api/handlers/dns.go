@@ -3,7 +3,7 @@ package handlers
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -88,7 +88,7 @@ func AddDNSProvider(c *fiber.Ctx) error {
 		userID, req.Provider, encZoneID, encAPIKey, encAPISecret, domain,
 	).Scan(&id, &createdAt)
 	if err != nil {
-		log.Printf("AddDNSProvider: DB insert failed for provider=%s domain=%s: %v", req.Provider, domain, err)
+		slog.Error("DB insert failed for DNS provider", "component", "dns", "provider", req.Provider, "domain", domain, "error", err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to save DNS provider"})
 	}
 
@@ -98,7 +98,7 @@ func AddDNSProvider(c *fiber.Ctx) error {
 	creds.Domain = domain
 	go func() {
 		if _, err := syncRecordsForProvider(id, req.Provider, creds); err != nil {
-			log.Printf("Auto-sync failed for provider %d: %v", id, err)
+			slog.Error("auto-sync failed after adding provider", "component", "dns", "provider_id", id, "error", err)
 		}
 	}()
 
@@ -151,7 +151,7 @@ func ListDNSProviders(c *fiber.Ctx) error {
 		providers = append(providers, p)
 	}
 	if err := rows.Err(); err != nil {
-		log.Printf("Error iterating DNS providers: %v", err)
+		slog.Error("error iterating DNS providers", "component", "dns", "error", err)
 	}
 
 	return c.JSON(providers)
@@ -248,11 +248,11 @@ func syncRecordsForProvider(providerID int, providerType string, creds dns.Crede
 			providerID, r.ProviderID, r.Type, r.Name, r.Content, r.TTL, r.Proxied, now,
 		).Scan(&id, &agentID)
 		if err != nil {
-			log.Printf("Failed to upsert DNS record %s: %v", r.Name, err)
+			slog.Error("failed to upsert DNS record", "component", "dns", "record_name", r.Name, "error", err)
 			continue
 		}
 		if agentID != nil {
-			database.DB.QueryRow(ctx, `SELECT name FROM agents WHERE id = $1`, *agentID).Scan(&agentName)
+			_ = database.DB.QueryRow(ctx, `SELECT name FROM agents WHERE id = $1`, *agentID).Scan(&agentName)
 		}
 		records = append(records, DNSRecordResponse{
 			ID:         id,
@@ -276,7 +276,7 @@ func syncRecordsForProvider(providerID int, providerType string, creds dns.Crede
 			providerID, remoteIDs,
 		)
 		if err != nil {
-			log.Printf("Failed to clean stale DNS records for provider %d: %v", providerID, err)
+			slog.Error("failed to clean stale DNS records", "component", "dns", "provider_id", providerID, "error", err)
 		}
 	}
 
@@ -334,7 +334,7 @@ func ListDNSRecords(c *fiber.Ctx) error {
 
 	var count int
 	var lastSynced *time.Time
-	database.DB.QueryRow(
+	_ = database.DB.QueryRow(
 		context.Background(),
 		`SELECT COUNT(*), MAX(last_synced) FROM dns_records WHERE dns_provider_id = $1`,
 		providerID,
@@ -347,7 +347,7 @@ func ListDNSRecords(c *fiber.Ctx) error {
 			if synced, err := syncRecordsForProvider(providerID, providerType, creds); err == nil {
 				return c.JSON(synced)
 			}
-			log.Printf("Auto-sync failed for provider %d: %v", providerID, err)
+			slog.Error("auto-sync failed for provider", "component", "dns", "provider_id", providerID, "error", err)
 		}
 	}
 
@@ -373,7 +373,7 @@ func ListDNSRecords(c *fiber.Ctx) error {
 		records = append(records, r)
 	}
 	if err := rows.Err(); err != nil {
-		log.Printf("Error iterating DNS records: %v", err)
+		slog.Error("error iterating DNS records", "component", "dns", "error", err)
 	}
 
 	return c.JSON(records)
@@ -434,7 +434,7 @@ func CreateDNSRecord(c *fiber.Ctx) error {
 		providerID, created.ProviderID, created.Type, created.Name, created.Content, created.TTL, created.Proxied, now,
 	).Scan(&id)
 	if err != nil {
-		log.Printf("Failed to cache new DNS record: %v", err)
+		slog.Error("failed to cache new DNS record", "component", "dns", "error", err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Record created at provider but failed to cache locally"})
 	}
 
@@ -510,7 +510,7 @@ func UpdateDNSRecord(c *fiber.Ctx) error {
 		updated.Type, updated.Name, updated.Content, updated.TTL, updated.Proxied, now, recordID,
 	)
 	if err != nil {
-		log.Printf("Failed to update cached DNS record: %v", err)
+		slog.Error("failed to update cached DNS record", "component", "dns", "error", err)
 	}
 
 	return c.JSON(DNSRecordResponse{
@@ -564,7 +564,7 @@ func DeleteDNSRecord(c *fiber.Ctx) error {
 
 	_, err = database.DB.Exec(context.Background(), `DELETE FROM dns_records WHERE id = $1`, recordID)
 	if err != nil {
-		log.Printf("Failed to delete cached DNS record: %v", err)
+		slog.Error("failed to delete cached DNS record", "component", "dns", "error", err)
 	}
 
 	return c.JSON(fiber.Map{"message": "DNS record deleted"})
@@ -746,7 +746,7 @@ func UpdateDDNSForAgent(agentDBID int, agentUserID int, newWanIP string) {
 		agentDBID, agentUserID,
 	)
 	if err != nil {
-		log.Printf("[DDNS] Failed to query records for agent %d: %v", agentDBID, err)
+		slog.Error("failed to query records for agent", "component", "dns", "operation", "ddns", "agent_id", agentDBID, "error", err)
 		return
 	}
 	defer rows.Close()
@@ -770,13 +770,13 @@ func UpdateDDNSForAgent(agentDBID int, agentUserID int, newWanIP string) {
 		var r ddnsRecord
 		if err := rows.Scan(&r.id, &r.providerRecordID, &r.recordType, &r.name, &r.content,
 			&r.providerID, &r.providerType, &r.encZoneID, &r.encAPIKey, &r.encAPISecret, &r.domain); err != nil {
-			log.Printf("[DDNS] Failed to scan record: %v", err)
+			slog.Error("failed to scan DDNS record", "component", "dns", "operation", "ddns", "error", err)
 			continue
 		}
 		records = append(records, r)
 	}
 	if err := rows.Err(); err != nil {
-		log.Printf("[DDNS] Error iterating records for agent %d: %v", agentDBID, err)
+		slog.Error("error iterating DDNS records", "component", "dns", "operation", "ddns", "agent_id", agentDBID, "error", err)
 	}
 	if len(records) == 0 {
 		return
@@ -806,19 +806,19 @@ func UpdateDDNSForAgent(agentDBID int, agentUserID int, newWanIP string) {
 		if !ok {
 			zoneID, err := crypto.Decrypt(r.encZoneID)
 			if err != nil {
-				log.Printf("[DDNS] Failed to decrypt zone_id for provider %d: %v", r.providerID, err)
+				slog.Error("failed to decrypt zone_id", "component", "dns", "operation", "ddns", "provider_id", r.providerID, "error", err)
 				continue
 			}
 			apiKey, err := crypto.Decrypt(r.encAPIKey)
 			if err != nil {
-				log.Printf("[DDNS] Failed to decrypt api_key for provider %d: %v", r.providerID, err)
+				slog.Error("failed to decrypt api_key", "component", "dns", "operation", "ddns", "provider_id", r.providerID, "error", err)
 				continue
 			}
 			apiSecret := ""
 			if r.encAPISecret != "" {
 				apiSecret, err = crypto.Decrypt(r.encAPISecret)
 				if err != nil {
-					log.Printf("[DDNS] Failed to decrypt api_secret for provider %d: %v", r.providerID, err)
+					slog.Error("failed to decrypt api_secret", "component", "dns", "operation", "ddns", "provider_id", r.providerID, "error", err)
 					continue
 				}
 			}
@@ -831,12 +831,12 @@ func UpdateDDNSForAgent(agentDBID int, agentUserID int, newWanIP string) {
 
 		p, err := dns.Get(cc.providerType)
 		if err != nil {
-			log.Printf("[DDNS] Unknown provider %q for record %s: %v", cc.providerType, r.name, err)
+			slog.Error("unknown provider for DDNS record", "component", "dns", "operation", "ddns", "provider", cc.providerType, "record_name", r.name, "error", err)
 			continue
 		}
 
 		if err := p.PatchContent(ctx, cc.creds, r.providerRecordID, newWanIP); err != nil {
-			log.Printf("[DDNS] Failed to update record %s (%s): %v", r.name, r.providerRecordID, err)
+			slog.Error("failed to update DDNS record at provider", "component", "dns", "operation", "ddns", "record_name", r.name, "provider_record_id", r.providerRecordID, "error", err)
 			continue
 		}
 
@@ -845,9 +845,9 @@ func UpdateDDNSForAgent(agentDBID int, agentUserID int, newWanIP string) {
 			newWanIP, r.id,
 		)
 		if err != nil {
-			log.Printf("[DDNS] Failed to update local record %d: %v", r.id, err)
+			slog.Error("failed to update local DDNS record", "component", "dns", "operation", "ddns", "record_id", r.id, "error", err)
 		}
 
-		log.Printf("[DDNS] Updated %s %s -> %s", r.name, r.content, newWanIP)
+		slog.Info("DDNS record updated", "component", "dns", "operation", "ddns", "record_name", r.name, "old_ip", r.content, "new_ip", newWanIP)
 	}
 }

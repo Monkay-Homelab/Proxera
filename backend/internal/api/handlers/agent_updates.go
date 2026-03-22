@@ -60,13 +60,13 @@ func GetAgentChecksum(c *fiber.Ctx) error {
 	}
 
 	filepath := "./downloads/" + filename
-	f, err := os.Open(filepath)
+	f, err := os.Open(filepath) //nolint:gosec // filename is validated above via allowedBinaries map
 	if err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
 			"error": "Binary not found",
 		})
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	h := sha256.New()
 	if _, err := io.Copy(h, f); err != nil {

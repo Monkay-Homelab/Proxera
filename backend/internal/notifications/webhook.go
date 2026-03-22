@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -53,7 +53,7 @@ func SendWebhook(url, method string, headers map[string]string, alert models.Ale
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		log.Printf("Webhook non-2xx response: %d for %s", resp.StatusCode, url)
+		slog.Warn("Webhook non-2xx response", "component", "notifications", "channel_type", "webhook", "status_code", resp.StatusCode, "url", url)
 		return fmt.Errorf("webhook returned %d", resp.StatusCode)
 	}
 
@@ -126,7 +126,7 @@ func SendDiscordWebhook(webhookURL string, alert models.AlertPayload) error {
 
 	// Discord returns 204 No Content on success
 	if resp.StatusCode != 204 && (resp.StatusCode < 200 || resp.StatusCode >= 300) {
-		log.Printf("Discord webhook non-success response: %d", resp.StatusCode)
+		slog.Warn("Discord webhook non-success response", "component", "notifications", "channel_type", "discord", "status_code", resp.StatusCode)
 		return fmt.Errorf("discord webhook returned %d", resp.StatusCode)
 	}
 

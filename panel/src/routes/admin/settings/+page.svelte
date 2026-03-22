@@ -32,13 +32,13 @@
 	let showImportModal = $state(false);
 	let exportPassword = $state('');
 	let importPassword = $state('');
-	let importFile = $state(null);
-	let importData = $state(null);
+	let importFile: File | null = $state(null);
+	let importData: any = $state(null);
 	let exporting = $state(false);
 	let importing = $state(false);
 	let exportError = $state('');
 	let importError = $state('');
-	let importResult = $state(null);
+	let importResult: any = $state(null);
 
 	onMount(async () => {
 		try {

@@ -26,25 +26,26 @@ func AdminGetStats(c *fiber.Ctx) error {
 	var userCount, domainCount, hostCount int
 	var storageBytes int64
 
-	database.DB.QueryRow(ctx, "SELECT COUNT(*) FROM users").Scan(&userCount)
-	database.DB.QueryRow(ctx, "SELECT COUNT(*) FROM dns_records").Scan(&domainCount)
-	database.DB.QueryRow(ctx, "SELECT COUNT(*) FROM hosts").Scan(&hostCount)
-	database.DB.QueryRow(ctx, "SELECT pg_database_size(current_database())").Scan(&storageBytes)
+	// Best-effort stats: individual query failures return zero values
+	_ = database.DB.QueryRow(ctx, "SELECT COUNT(*) FROM users").Scan(&userCount)
+	_ = database.DB.QueryRow(ctx, "SELECT COUNT(*) FROM dns_records").Scan(&domainCount)
+	_ = database.DB.QueryRow(ctx, "SELECT COUNT(*) FROM hosts").Scan(&hostCount)
+	_ = database.DB.QueryRow(ctx, "SELECT pg_database_size(current_database())").Scan(&storageBytes)
 
 	var fs syscall.Statfs_t
 	var diskTotal, diskUsed uint64
 	if err := syscall.Statfs("/", &fs); err == nil {
-		diskTotal = fs.Blocks * uint64(fs.Bsize)
-		diskUsed = diskTotal - fs.Bfree*uint64(fs.Bsize)
+		diskTotal = fs.Blocks * uint64(fs.Bsize) //nolint:gosec // Bsize is always positive on valid filesystems
+		diskUsed = diskTotal - fs.Bfree*uint64(fs.Bsize) //nolint:gosec // Bsize is always positive on valid filesystems
 	}
 
 	return c.JSON(fiber.Map{
-		"user_count":         userCount,
-		"domain_count":       domainCount,
-		"host_count":         hostCount,
-		"db_size_bytes":      storageBytes,
-		"disk_total_bytes":   diskTotal,
-		"disk_used_bytes":    diskUsed,
+		"user_count":       userCount,
+		"domain_count":     domainCount,
+		"host_count":       hostCount,
+		"db_size_bytes":    storageBytes,
+		"disk_total_bytes": diskTotal,
+		"disk_used_bytes":  diskUsed,
 	})
 }
 
@@ -263,6 +264,22 @@ func AdminUpdateUser(c *fiber.Ctx) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	// Guard: prevent demoting the last admin
+	if body.Role != "admin" {
+		var currentRole string
+		err = database.DB.QueryRow(ctx, `SELECT COALESCE(role, 'member') FROM users WHERE id = $1`, id).Scan(&currentRole)
+		if err != nil {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "User not found"})
+		}
+		if currentRole == "admin" {
+			var adminCount int
+			_ = database.DB.QueryRow(ctx, `SELECT COUNT(*) FROM users WHERE role = 'admin'`).Scan(&adminCount)
+			if adminCount <= 1 {
+				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Cannot demote the last admin account."})
+			}
+		}
+	}
+
 	_, err = database.DB.Exec(ctx,
 		`UPDATE users SET name=$1, email=$2, role=$3, email_verified=$4, updated_at=NOW() WHERE id=$5`,
 		body.Name, body.Email, body.Role, body.EmailVerified, id,
@@ -279,15 +296,16 @@ func AdminGetDashboardHealth(c *fiber.Ctx) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
+	// Best-effort dashboard stats: failures return zero values
 	var agentTotal, agentOnline int
-	database.DB.QueryRow(ctx, `
+	_ = database.DB.QueryRow(ctx, `
 		SELECT COUNT(*),
 		       COUNT(*) FILTER (WHERE last_seen > NOW() - INTERVAL '90 seconds')
 		FROM agents
 	`).Scan(&agentTotal, &agentOnline)
 
 	var certTotal, certValid, certExpiring, certExpired int
-	database.DB.QueryRow(ctx, `
+	_ = database.DB.QueryRow(ctx, `
 		SELECT COUNT(*),
 		       COUNT(*) FILTER (WHERE expires_at > NOW() + INTERVAL '30 days'),
 		       COUNT(*) FILTER (WHERE expires_at > NOW() AND expires_at <= NOW() + INTERVAL '30 days'),
@@ -555,7 +573,7 @@ func AdminGetPlatformMetrics(c *fiber.Ctx) error {
 	case "24h":
 		duration, table, timeCol = "24 hours", "metrics", "time"
 	case "7d":
-		duration, table, timeCol = "7 days", "metrics", "time"
+		duration, table, timeCol = "7 days", "metrics_hourly", "bucket"
 	case "30d":
 		duration, table, timeCol = "30 days", "metrics_15min", "bucket"
 	default:
@@ -564,7 +582,7 @@ func AdminGetPlatformMetrics(c *fiber.Ctx) error {
 	}
 
 	var totalRequests, bytesSent, bytesRecv, s2xx, s3xx, s4xx, s5xx int64
-	database.DB.QueryRow(ctx, fmt.Sprintf(`
+	_ = database.DB.QueryRow(ctx, fmt.Sprintf(`
 		SELECT COALESCE(SUM(request_count), 0), COALESCE(SUM(bytes_sent), 0),
 		       COALESCE(SUM(bytes_received), 0),
 		       COALESCE(SUM(status_2xx), 0), COALESCE(SUM(status_3xx), 0),
@@ -681,7 +699,7 @@ func AdminListAlerts(c *fiber.Ctx) error {
 	}
 
 	var total int
-	database.DB.QueryRow(ctx, `SELECT COUNT(*) FROM alert_history`).Scan(&total)
+	_ = database.DB.QueryRow(ctx, `SELECT COUNT(*) FROM alert_history`).Scan(&total)
 
 	return c.JSON(fiber.Map{
 		"alerts": alerts,
@@ -694,15 +712,16 @@ func AdminAlertStats(c *fiber.Ctx) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	// Best-effort alert stats: individual query failures return zero values
 	var activeAlerts, triggers24h, triggers7d, usersWithActive int
 
-	database.DB.QueryRow(ctx,
+	_ = database.DB.QueryRow(ctx,
 		`SELECT COUNT(*) FROM alert_history WHERE resolved = false`).Scan(&activeAlerts)
-	database.DB.QueryRow(ctx,
+	_ = database.DB.QueryRow(ctx,
 		`SELECT COUNT(*) FROM alert_history WHERE created_at > NOW() - INTERVAL '24 hours'`).Scan(&triggers24h)
-	database.DB.QueryRow(ctx,
+	_ = database.DB.QueryRow(ctx,
 		`SELECT COUNT(*) FROM alert_history WHERE created_at > NOW() - INTERVAL '7 days'`).Scan(&triggers7d)
-	database.DB.QueryRow(ctx,
+	_ = database.DB.QueryRow(ctx,
 		`SELECT COUNT(DISTINCT user_id) FROM alert_history WHERE resolved = false`).Scan(&usersWithActive)
 
 	return c.JSON(fiber.Map{
@@ -722,13 +741,38 @@ func AdminSuspendUser(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid user ID"})
 	}
 
+	// Guard: prevent suspending yourself
+	actingUserID, _ := c.Locals("user_id").(int)
+	if actingUserID == id {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Cannot suspend your own account."})
+	}
+
 	var req struct {
 		Reason string `json:"reason"`
 	}
-	c.BodyParser(&req)
+	_ = c.BodyParser(&req) // reason is optional; ignore parse errors
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+
+	// Guard: prevent suspending the last non-suspended admin
+	var targetRole string
+	var targetSuspended bool
+	err = database.DB.QueryRow(ctx,
+		`SELECT COALESCE(role, 'member'), COALESCE(suspended, false) FROM users WHERE id = $1`, id,
+	).Scan(&targetRole, &targetSuspended)
+	if err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "User not found"})
+	}
+	if targetRole == "admin" && !targetSuspended {
+		var activeAdminCount int
+		_ = database.DB.QueryRow(ctx,
+			`SELECT COUNT(*) FROM users WHERE role = 'admin' AND COALESCE(suspended, false) = false`,
+		).Scan(&activeAdminCount)
+		if activeAdminCount <= 1 {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Cannot suspend the last admin account."})
+		}
+	}
 
 	tag, err := database.DB.Exec(ctx,
 		`UPDATE users SET suspended = true, suspended_at = NOW(), suspended_reason = $1 WHERE id = $2`,
@@ -789,11 +833,15 @@ func AdminForcePasswordReset(c *fiber.Ctx) error {
 	}
 	token := hex.EncodeToString(b)
 
+	// Hash the token before storing — only the hash is persisted; the
+	// unhashed token is sent in the email URL and never stored.
+	tokenHash := HashAPIKey(token)
+
 	// Invalidate any existing tokens for this user and insert the new one
-	database.DB.Exec(ctx, `DELETE FROM password_reset_tokens WHERE user_id = $1`, id)
+	_, _ = database.DB.Exec(ctx, `DELETE FROM password_reset_tokens WHERE user_id = $1`, id) // best-effort cleanup
 	_, err = database.DB.Exec(ctx,
 		`INSERT INTO password_reset_tokens (user_id, token, expires_at) VALUES ($1, $2, NOW() + INTERVAL '1 hour')`,
-		id, token,
+		id, tokenHash,
 	)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to store reset token"})
@@ -833,8 +881,8 @@ func AdminGetSystemHealth(c *fiber.Ctx) error {
 	var fs syscall.Statfs_t
 	var diskTotal, diskUsed uint64
 	if err := syscall.Statfs("/", &fs); err == nil {
-		diskTotal = fs.Blocks * uint64(fs.Bsize)
-		diskUsed = diskTotal - fs.Bfree*uint64(fs.Bsize)
+		diskTotal = fs.Blocks * uint64(fs.Bsize) //nolint:gosec // Bsize is always positive on valid filesystems
+		diskUsed = diskTotal - fs.Bfree*uint64(fs.Bsize) //nolint:gosec // Bsize is always positive on valid filesystems
 	}
 
 	uptimeSecs := int64(time.Since(reqstats.GlobalRequestTracker.StartedAt).Seconds())

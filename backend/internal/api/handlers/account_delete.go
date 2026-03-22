@@ -2,7 +2,7 @@ package handlers
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -54,7 +54,7 @@ func DeleteAccount(c *fiber.Ctx) error {
 	// Collect agent_id strings for metrics/visitor_ips cleanup
 	agentIDs, err := collectAgentIDs(ctx, userID)
 	if err != nil {
-		log.Printf("DeleteAccount: failed to collect agent IDs for user %d: %v", userID, err)
+		slog.Error("failed to collect agent IDs for account deletion", "component", "auth", "user_id", userID, "error", err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error": "Account deletion failed",
 		})
@@ -65,25 +65,25 @@ func DeleteAccount(c *fiber.Ctx) error {
 		if _, err := database.DB.Exec(ctx,
 			`DELETE FROM metrics WHERE agent_id = ANY($1)`, agentIDs,
 		); err != nil {
-			log.Printf("DeleteAccount: metrics delete failed for user %d: %v", userID, err)
+			slog.Error("metrics delete failed for account deletion", "component", "auth", "user_id", userID, "error", err)
 		}
 		if _, err := database.DB.Exec(ctx,
 			`DELETE FROM visitor_ips WHERE agent_id = ANY($1)`, agentIDs,
 		); err != nil {
-			log.Printf("DeleteAccount: visitor_ips delete failed for user %d: %v", userID, err)
+			slog.Error("visitor_ips delete failed for account deletion", "component", "auth", "user_id", userID, "error", err)
 		}
 	}
 
 	// Delete user (CASCADE handles agents, dns_providers, dns_records, hosts, certificates)
 	_, err = database.DB.Exec(ctx, `DELETE FROM users WHERE id = $1`, userID)
 	if err != nil {
-		log.Printf("DeleteAccount: user delete failed for user %d: %v", userID, err)
+		slog.Error("user delete failed for account deletion", "component", "auth", "user_id", userID, "error", err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error": "Account deletion failed",
 		})
 	}
 
-	log.Printf("Account deleted for user %d", userID)
+	slog.Info("account deleted", "component", "auth", "user_id", userID)
 	return c.JSON(fiber.Map{
 		"message": "Account deleted",
 	})

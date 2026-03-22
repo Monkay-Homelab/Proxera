@@ -1,9 +1,61 @@
-<script>
+<script lang="ts">
 	import { onMount } from 'svelte';
 	import { page } from '$app/stores';
 	import { goto } from '$app/navigation';
 	import { api } from '$lib/api';
 	import { navRefresh } from '$lib/navRefresh';
+	import type { Agent, DnsProvider } from '$lib/types';
+
+	interface BasicAuth { username: string; password: string }
+	interface RateLimit { requests_per_second: number; burst: number; zone_size?: string }
+	interface HstsConfig { enabled: boolean; max_age: number; include_subdomains: boolean; preload: boolean }
+	interface CorsConfig { enabled: boolean; dynamic?: boolean; allowed_origins: string[]; allowed_methods: string[]; allowed_headers: string[]; allow_credentials: boolean; max_age: number }
+	interface SecurityHeaders { csp: string; referrer_policy: string; permissions_policy: string; x_frame_options: string }
+	interface TimeoutsConfig { connect: number | string; send: number | string; read: number | string }
+	interface GzipConfig { enabled: boolean; types: string[]; min_length: number; comp_level: number }
+	interface ProxyBuffering { enabled: boolean; buffer_size: string; buffers_count: number; buffers_size: string }
+	interface ProxySsl { verify: boolean; server_name: boolean | string }
+	interface RedirectEntry { source: string; target: string; code: number }
+	interface LocationEntry { path: string; upstream_url: string; websocket: boolean; headers?: Record<string, string>; use_location_proxy_headers?: boolean; disabled_proxy_headers?: string[] }
+	interface LbServer { address: string; weight: number }
+	interface LoadBalancing { method: string; servers: LbServer[] }
+	interface ListItem { value: string }
+	interface LocationListItem extends LocationEntry { _expanded: boolean; _headerPairs: { key: string; value: string }[]; _disabledProxyHeaders: string[]; exact?: boolean; strip_prefix?: boolean }
+	interface ErrorPageItem { code: string; path: string }
+	interface CertRecord { id: number; domain: string; san?: string; status: string; issued_at?: string; expires_at?: string; certificate_pem?: string; private_key_pem?: string; issuer_pem?: string }
+	interface BackupEntry { filename: string; size: number; size_bytes?: number; created_at: string; timestamp?: string }
+
+	interface HostEditConfig {
+		headers: Record<string, string>;
+		hide_headers: string[];
+		disabled_proxy_headers: string[];
+		disabled_hide_headers: string[];
+		basic_auth: BasicAuth | null;
+		rate_limit: RateLimit | null;
+		ip_allowlist: string[];
+		ip_blocklist: string[];
+		trusted_proxies: string[];
+		cloudflare_real_ip: boolean;
+		http_proxy: boolean;
+		hsts: HstsConfig | null;
+		cors: CorsConfig | null;
+		security_headers: SecurityHeaders | null;
+		timeouts: TimeoutsConfig | null;
+		client_max_body_size: string;
+		gzip: GzipConfig | null;
+		proxy_buffering: ProxyBuffering | null;
+		proxy_request_buffering: boolean | null;
+		proxy_ssl: ProxySsl | null;
+		redirects: RedirectEntry[];
+		custom_error_pages: Record<string, string>;
+		locations: LocationEntry[];
+		load_balancing: LoadBalancing | null;
+		custom_nginx_config: string;
+		http2: boolean;
+		access_log: boolean;
+		server_aliases: string[];
+		redirect_only: boolean;
+	}
 
 	const providerId = $page.params.id;
 	const hostId = $page.params.hostId;
@@ -20,20 +72,20 @@
 	let formUpstream = '';
 	let formSSL = false;
 	let formWebSocket = false;
-	let formCertificateId = null;
-	let formAgentId = null;
+	let formCertificateId: number | null = null;
+	let formAgentId: number | string | null = null;
 
 	// Certificate state
-	let certificates = [];
+	let certificates: CertRecord[] = [];
 	let certsLoaded = false;
-	let matchedCert = null;
+	let matchedCert: CertRecord | null = null;
 
 	// Agent state
-	let agents = [];
+	let agents: Agent[] = [];
 	let agentsLoaded = false;
 
 	// Advanced config
-	let config = {
+	let config: HostEditConfig = {
 		headers: {},
 		hide_headers: [],
 		disabled_proxy_headers: [],
@@ -69,10 +121,10 @@
 	let activeSection = 'basic';
 
 	// Backup history state
-	let backups = [];
+	let backups: BackupEntry[] = [];
 	let backupsLoading = false;
 	let backupsLoaded = false;
-	let restoring = null; // filename being restored
+	let restoring: string | null = null; // filename being restored
 	let restoreMsg = '';
 	let restoreError = '';
 
@@ -84,15 +136,15 @@
 	let viewModalError = '';
 
 	// UI lists for dynamic items
-	let allowlistList = [];
-	let blocklistList = [];
-	let trustedProxiesList = [];
-	let redirectsList = [];
-	let errorPagesList = [];
-	let locationsList = [];
-	let lbServersList = [];
-	let serverAliasesList = [];
-	let corsOriginsList = [];
+	let allowlistList: ListItem[] = [];
+	let blocklistList: ListItem[] = [];
+	let trustedProxiesList: ListItem[] = [];
+	let redirectsList: RedirectEntry[] = [];
+	let errorPagesList: ErrorPageItem[] = [];
+	let locationsList: LocationListItem[] = [];
+	let lbServersList: LbServer[] = [];
+	let serverAliasesList: ListItem[] = [];
+	let corsOriginsList: ListItem[] = [];
 
 	// Preset options
 	const HTTP_METHODS = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS', 'HEAD'];
@@ -179,16 +231,16 @@
 	const LB_WEIGHT_PRESETS = [1, 2, 3, 5, 10];
 
 	// Chip toggle helper
-	function toggleChip(arr, item) {
+	function toggleChip(arr: string[], item: string) {
 		const idx = arr.indexOf(item);
 		if (idx >= 0) {
-			return arr.filter((_, i) => i !== idx);
+			return arr.filter((_: string, i: number) => i !== idx);
 		}
 		return [...arr, item];
 	}
 
 	// Count configured items in a section
-	function sectionBadge(name) {
+	function sectionBadge(name: string) {
 		let count = 0;
 		if (name === 'headers') {
 			count += 6 - config.disabled_proxy_headers.length;
@@ -232,7 +284,7 @@
 			const res = await api('/api/dns/providers');
 			if (res.ok) {
 				const providers = await res.json();
-				const match = providers.find(p => p.id === parseInt(providerId));
+				const match = providers.find((p: DnsProvider) => p.id === parseInt(providerId ?? ''));
 				if (match) parentDomain = match.domain;
 			}
 		} catch (err) {
@@ -282,13 +334,13 @@
 					if (c.disabled_hide_headers) config.disabled_hide_headers = c.disabled_hide_headers;
 					if (c.basic_auth) config.basic_auth = c.basic_auth;
 					if (c.rate_limit) config.rate_limit = c.rate_limit;
-					if (c.ip_allowlist) { config.ip_allowlist = c.ip_allowlist; allowlistList = c.ip_allowlist.map(ip => ({value:ip})); }
-					if (c.ip_blocklist) { config.ip_blocklist = c.ip_blocklist; blocklistList = c.ip_blocklist.map(ip => ({value:ip})); }
-					if (c.trusted_proxies) { config.trusted_proxies = c.trusted_proxies; trustedProxiesList = c.trusted_proxies.map(ip => ({value:ip})); }
+					if (c.ip_allowlist) { config.ip_allowlist = c.ip_allowlist; allowlistList = c.ip_allowlist.map((ip: string) => ({value:ip})); }
+					if (c.ip_blocklist) { config.ip_blocklist = c.ip_blocklist; blocklistList = c.ip_blocklist.map((ip: string) => ({value:ip})); }
+					if (c.trusted_proxies) { config.trusted_proxies = c.trusted_proxies; trustedProxiesList = c.trusted_proxies.map((ip: string) => ({value:ip})); }
 					if (c.cloudflare_real_ip) config.cloudflare_real_ip = c.cloudflare_real_ip;
 					if (c.http_proxy) config.http_proxy = c.http_proxy;
 					if (c.hsts) config.hsts = c.hsts;
-					if (c.cors) { config.cors = c.cors; corsOriginsList = (c.cors.allowed_origins || []).map(o => ({value:o})); }
+					if (c.cors) { config.cors = c.cors; corsOriginsList = (c.cors.allowed_origins || []).map((o: string) => ({value:o})); }
 					if (c.security_headers) config.security_headers = c.security_headers;
 					if (c.timeouts) config.timeouts = c.timeouts;
 					if (c.client_max_body_size) config.client_max_body_size = c.client_max_body_size;
@@ -297,10 +349,10 @@
 					if (c.proxy_request_buffering !== undefined && c.proxy_request_buffering !== null) config.proxy_request_buffering = c.proxy_request_buffering;
 					if (c.proxy_ssl) config.proxy_ssl = c.proxy_ssl;
 					if (c.redirects) { config.redirects = c.redirects; redirectsList = [...c.redirects]; }
-					if (c.custom_error_pages) { config.custom_error_pages = c.custom_error_pages; errorPagesList = Object.entries(c.custom_error_pages).map(([k,v]) => ({code:k, path:v})); }
+					if (c.custom_error_pages) { config.custom_error_pages = c.custom_error_pages; errorPagesList = Object.entries(c.custom_error_pages).map(([k,v]) => ({code:k, path:v as string})); }
 					if (c.locations) {
 						const hostDisabled = c.disabled_proxy_headers || [];
-						locationsList = c.locations.map(l => ({
+						locationsList = c.locations.map((l: LocationEntry & { use_location_proxy_headers?: boolean; disabled_proxy_headers?: string[] }) => ({
 							...l,
 							_expanded: Object.keys(l.headers || {}).length > 0,
 							_headerPairs: Object.entries(l.headers || {}).map(([key, value]) => ({ key, value })),
@@ -311,7 +363,7 @@
 					if (c.custom_nginx_config) config.custom_nginx_config = c.custom_nginx_config;
 					if (c.http2 !== undefined && c.http2 !== null) config.http2 = c.http2;
 					if (c.access_log !== undefined && c.access_log !== null) config.access_log = c.access_log;
-					if (c.server_aliases) { config.server_aliases = c.server_aliases; serverAliasesList = c.server_aliases.map(a => ({value:a})); }
+					if (c.server_aliases) { config.server_aliases = c.server_aliases; serverAliasesList = c.server_aliases.map((a: string) => ({value:a})); }
 					if (c.redirect_only) config.redirect_only = c.redirect_only;
 				}
 
@@ -331,7 +383,7 @@
 		}
 	}
 
-	function extractSubdomain(fullDomain) {
+	function extractSubdomain(fullDomain: string) {
 		if (!parentDomain) return fullDomain;
 		if (fullDomain === parentDomain) return '@';
 		if (fullDomain.endsWith('.' + parentDomain)) {
@@ -340,7 +392,7 @@
 		return fullDomain;
 	}
 
-	function buildFullDomain(sub) {
+	function buildFullDomain(sub: string) {
 		if (!sub || sub === '@') return parentDomain;
 		return `${sub}.${parentDomain}`;
 	}
@@ -350,7 +402,7 @@
 		try {
 			const res = await api('/api/certificates');
 			if (res.ok) {
-				certificates = (await res.json()).filter(c => c.status === 'active' || c.status === 'expiring');
+				certificates = (await res.json()).filter((c: CertRecord) => c.status === 'active' || c.status === 'expiring');
 			}
 		} catch (err) {
 			console.error('Failed to fetch certificates:', err);
@@ -358,7 +410,7 @@
 		certsLoaded = true;
 	}
 
-	function findMatchingCert(domain) {
+	function findMatchingCert(domain: string) {
 		if (!domain || certificates.length === 0) return null;
 		let match = certificates.find(c => c.domain === domain);
 		if (match) return match;
@@ -392,17 +444,17 @@
 		formCertificateId = matchedCert ? matchedCert.id : null;
 	}
 
-	function buildPermissionsPolicy(perms) {
+	function buildPermissionsPolicy(perms: string[]) {
 		return perms.map(p => `${p}=()`).join(', ');
 	}
 
-	function parsePermissionsPolicy(str) {
+	function parsePermissionsPolicy(str: string) {
 		if (!str) return [];
 		return str.split(',').map(s => s.trim().replace(/=\(\)$/, '')).filter(Boolean);
 	}
 
 	function buildConfigPayload() {
-		const cfg = {};
+		const cfg: Record<string, unknown> = {};
 
 		if (Object.keys(config.headers).length > 0) {
 			cfg.headers = { ...config.headers };
@@ -464,23 +516,24 @@
 		if (validRedirects.length > 0) cfg.redirects = validRedirects.map(r => ({ source: r.source, target: r.target, code: r.code || 301 }));
 
 		if (errorPagesList.length > 0) {
-			const ep = {};
-			errorPagesList.forEach(item => { if (item.code && item.path) ep[item.code] = item.path; });
+			const ep: Record<string, string> = {};
+			errorPagesList.forEach((item: ErrorPageItem) => { if (item.code && item.path) ep[item.code] = item.path; });
 			if (Object.keys(ep).length > 0) cfg.custom_error_pages = ep;
 		}
 
 		const validLocs = locationsList
-			.filter(l => l.path && l.upstream_url)
-			.map(({ _expanded, _headerPairs, headers: _oldHeaders, exact, strip_prefix, _disabledProxyHeaders, ...l }) => {
-				const headers = {};
-				for (const { key, value } of (_headerPairs || [])) {
+			.filter((l: LocationListItem) => l.path && l.upstream_url)
+			.map((item: LocationListItem) => {
+				const headers: Record<string, string> = {};
+				for (const { key, value } of (item._headerPairs || [])) {
 					if (key && value) headers[key] = value;
 				}
-				const loc = Object.keys(headers).length > 0 ? { ...l, headers } : { ...l };
-				if (exact) loc.exact = true;
-				if (strip_prefix) loc.strip_prefix = true;
+				const loc: Record<string, unknown> = { path: item.path, upstream_url: item.upstream_url, websocket: item.websocket };
+				if (Object.keys(headers).length > 0) loc.headers = headers;
+				if (item.exact) loc.exact = true;
+				if (item.strip_prefix) loc.strip_prefix = true;
 				loc.use_location_proxy_headers = true;
-				if (_disabledProxyHeaders.length > 0) loc.disabled_proxy_headers = _disabledProxyHeaders;
+				if (item._disabledProxyHeaders.length > 0) loc.disabled_proxy_headers = item._disabledProxyHeaders;
 				return loc;
 			});
 		if (validLocs.length > 0) cfg.locations = validLocs;
@@ -563,26 +616,26 @@
 
 	// List helpers
 function addServerAlias() { serverAliasesList = [...serverAliasesList, { value: '' }]; }
-	function removeServerAlias(i) { serverAliasesList = serverAliasesList.filter((_, idx) => idx !== i); }
+	function removeServerAlias(i: number) { serverAliasesList = serverAliasesList.filter((_: ListItem, idx: number) => idx !== i); }
 	function addAllowlistIP() { allowlistList = [...allowlistList, { value: '' }]; }
-	function removeAllowlistIP(i) { allowlistList = allowlistList.filter((_, idx) => idx !== i); }
+	function removeAllowlistIP(i: number) { allowlistList = allowlistList.filter((_: ListItem, idx: number) => idx !== i); }
 	function addBlocklistIP() { blocklistList = [...blocklistList, { value: '' }]; }
-	function removeBlocklistIP(i) { blocklistList = blocklistList.filter((_, idx) => idx !== i); }
+	function removeBlocklistIP(i: number) { blocklistList = blocklistList.filter((_: ListItem, idx: number) => idx !== i); }
 	function addTrustedProxy() { trustedProxiesList = [...trustedProxiesList, { value: '' }]; }
-	function removeTrustedProxy(i) { trustedProxiesList = trustedProxiesList.filter((_, idx) => idx !== i); }
+	function removeTrustedProxy(i: number) { trustedProxiesList = trustedProxiesList.filter((_: ListItem, idx: number) => idx !== i); }
 	function addRedirect() { redirectsList = [...redirectsList, { source: '', target: '', code: 301 }]; }
-	function removeRedirect(i) { redirectsList = redirectsList.filter((_, idx) => idx !== i); }
+	function removeRedirect(i: number) { redirectsList = redirectsList.filter((_: RedirectEntry, idx: number) => idx !== i); }
 	function addErrorPage() { errorPagesList = [...errorPagesList, { code: '', path: '' }]; }
-	function removeErrorPage(i) { errorPagesList = errorPagesList.filter((_, idx) => idx !== i); }
+	function removeErrorPage(i: number) { errorPagesList = errorPagesList.filter((_: ErrorPageItem, idx: number) => idx !== i); }
 	function addLocation() {
 		locationsList = [...locationsList, {
-			path: '', upstream_url: '', websocket: false, exact: false, strip_prefix: false,
+			path: '', upstream_url: '', websocket: false,
 			_expanded: false, _headerPairs: [],
 			_disabledProxyHeaders: [...(config.disabled_proxy_headers || [])]
-		}];
+		} as LocationListItem];
 	}
-	function removeLocation(i) { locationsList = locationsList.filter((_, idx) => idx !== i); }
-	function moveLocation(i, dir) {
+	function removeLocation(i: number) { locationsList = locationsList.filter((_: LocationListItem, idx: number) => idx !== i); }
+	function moveLocation(i: number, dir: number) {
 		const j = i + dir;
 		if (j < 0 || j >= locationsList.length) return;
 		const next = [...locationsList];
@@ -590,11 +643,11 @@ function addServerAlias() { serverAliasesList = [...serverAliasesList, { value: 
 		locationsList = next;
 	}
 	function addLBServer() { lbServersList = [...lbServersList, { address: '', weight: 1 }]; }
-	function removeLBServer(i) { lbServersList = lbServersList.filter((_, idx) => idx !== i); }
+	function removeLBServer(i: number) { lbServersList = lbServersList.filter((_: LbServer, idx: number) => idx !== i); }
 	function addCorsOrigin() { corsOriginsList = [...corsOriginsList, { value: '' }]; }
-	function removeCorsOrigin(i) { corsOriginsList = corsOriginsList.filter((_, idx) => idx !== i); }
+	function removeCorsOrigin(i: number) { corsOriginsList = corsOriginsList.filter((_: ListItem, idx: number) => idx !== i); }
 
-	function toggleProxyHeader(hdr) {
+	function toggleProxyHeader(hdr: { key: string; value: string }) {
 		if (config.headers[hdr.key]) {
 			const copy = { ...config.headers };
 			delete copy[hdr.key];
@@ -604,7 +657,7 @@ function addServerAlias() { serverAliasesList = [...serverAliasesList, { value: 
 		}
 	}
 
-	function toggleDefaultProxyHeader(key) {
+	function toggleDefaultProxyHeader(key: string) {
 		if (config.disabled_proxy_headers.includes(key)) {
 			config.disabled_proxy_headers = config.disabled_proxy_headers.filter(h => h !== key);
 		} else {
@@ -612,7 +665,7 @@ function addServerAlias() { serverAliasesList = [...serverAliasesList, { value: 
 		}
 	}
 
-	function toggleDefaultHideHeader(key) {
+	function toggleDefaultHideHeader(key: string) {
 		if (config.disabled_hide_headers.includes(key)) {
 			config.disabled_hide_headers = config.disabled_hide_headers.filter(h => h !== key);
 		} else {
@@ -620,7 +673,7 @@ function addServerAlias() { serverAliasesList = [...serverAliasesList, { value: 
 		}
 	}
 
-	function toggleHideHeader(key) {
+	function toggleHideHeader(key: string) {
 		if (config.hide_headers.includes(key)) {
 			config.hide_headers = config.hide_headers.filter(h => h !== key);
 		} else {
@@ -662,7 +715,7 @@ function addServerAlias() { serverAliasesList = [...serverAliasesList, { value: 
 		backupsLoaded = true;
 	}
 
-	async function restoreBackup(filename) {
+	async function restoreBackup(filename: string) {
 		restoring = filename;
 		restoreMsg = '';
 		restoreError = '';
@@ -685,17 +738,17 @@ function addServerAlias() { serverAliasesList = [...serverAliasesList, { value: 
 		restoring = null;
 	}
 
-	function formatBytes(bytes) {
+	function formatBytes(bytes: number) {
 		if (bytes < 1024) return `${bytes} B`;
 		if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
 		return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 	}
 
-	function formatBackupDate(ts) {
+	function formatBackupDate(ts: string) {
 		return new Date(ts).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
 	}
 
-	async function openBackupViewer(b) {
+	async function openBackupViewer(b: BackupEntry) {
 		viewModalFilename = b.filename;
 		viewModalContent = '';
 		viewModalError = '';
@@ -868,7 +921,7 @@ function addServerAlias() { serverAliasesList = [...serverAliasesList, { value: 
 					<div class="field">
 						<label for="host-agent">Deploy to Agent</label>
 						<p class="field-desc">Choose which server agent will receive and apply this nginx configuration. Leave unset for manual management.</p>
-						<select id="host-agent" bind:value={formAgentId} onchange={(e) => { formAgentId = e.target.value ? Number(e.target.value) : null; }}>
+						<select id="host-agent" bind:value={formAgentId} onchange={(e) => { const t = e.target as HTMLSelectElement; formAgentId = t.value ? Number(t.value) : null; }}>
 							<option value={null}>No agent (manual)</option>
 							{#each agents as agent}
 								<option value={agent.id}>{agent.name} ({agent.status})</option>
@@ -909,15 +962,15 @@ function addServerAlias() { serverAliasesList = [...serverAliasesList, { value: 
 									</div>
 									<div class="cert-info">
 										<span class="cert-domain">{matchedCert.domain}{matchedCert.san ? `, ${matchedCert.san}` : ''}</span>
-										<span class="cert-expiry">Expires {new Date(matchedCert.expires_at).toLocaleDateString()}</span>
+										<span class="cert-expiry">Expires {new Date(matchedCert.expires_at ?? '').toLocaleDateString()}</span>
 									</div>
 									<button class="btn-sm" type="button" onclick={() => { matchedCert = null; }}>Change</button>
 								</div>
 							{:else if certificates.length > 0}
-								<select bind:value={formCertificateId} onchange={(e) => { formCertificateId = e.target.value ? Number(e.target.value) : null; }}>
+								<select bind:value={formCertificateId} onchange={(e) => { const t = e.target as HTMLSelectElement; formCertificateId = t.value ? Number(t.value) : null; }}>
 									<option value={null}>Select a certificate...</option>
 									{#each certificates as cert}
-										<option value={cert.id}>{cert.domain}{cert.san ? ` + ${cert.san}` : ''} (expires {new Date(cert.expires_at).toLocaleDateString()})</option>
+										<option value={cert.id}>{cert.domain}{cert.san ? ` + ${cert.san}` : ''} (expires {new Date(cert.expires_at ?? '').toLocaleDateString()})</option>
 									{/each}
 								</select>
 							{:else if certsLoaded}
@@ -1046,8 +1099,8 @@ function addServerAlias() { serverAliasesList = [...serverAliasesList, { value: 
 									<p class="field-desc">Steady-state rate. Requests beyond this are delayed or rejected.</p>
 									<div class="chip-group">
 										{#each RATE_PRESETS as rate}
-											<button type="button" class="chip" class:active={config.rate_limit.requests_per_second === rate}
-												onclick={() => config.rate_limit.requests_per_second = rate}>
+											<button type="button" class="chip" class:active={config.rate_limit!.requests_per_second === rate}
+												onclick={() => config.rate_limit!.requests_per_second = rate}>
 												{rate}/s
 											</button>
 										{/each}
@@ -1059,8 +1112,8 @@ function addServerAlias() { serverAliasesList = [...serverAliasesList, { value: 
 									<p class="field-desc">Extra requests allowed in short bursts before rate limiting kicks in.</p>
 									<div class="chip-group">
 										{#each BURST_PRESETS as burst}
-											<button type="button" class="chip" class:active={config.rate_limit.burst === burst}
-												onclick={() => config.rate_limit.burst = burst}>
+											<button type="button" class="chip" class:active={config.rate_limit!.burst === burst}
+												onclick={() => config.rate_limit!.burst = burst}>
 												{burst}
 											</button>
 										{/each}
@@ -1185,8 +1238,8 @@ function addServerAlias() { serverAliasesList = [...serverAliasesList, { value: 
 								<p class="field-desc">How long browsers should remember to only use HTTPS. Longer is more secure but harder to undo.</p>
 								<div class="chip-group">
 									{#each HSTS_PRESETS as preset}
-										<button type="button" class="chip" class:active={config.hsts.max_age === preset.value}
-											onclick={() => config.hsts.max_age = preset.value}>
+										<button type="button" class="chip" class:active={config.hsts!.max_age === preset.value}
+											onclick={() => config.hsts!.max_age = preset.value}>
 											{preset.label}
 										</button>
 									{/each}
@@ -1198,7 +1251,7 @@ function addServerAlias() { serverAliasesList = [...serverAliasesList, { value: 
 										<span class="toggle-card-label">Include Subdomains</span>
 										<span class="toggle-card-desc">Apply HSTS to all subdomains too.</span>
 									</div>
-									<button class="toggle-btn" class:active={config.hsts.include_subdomains} onclick={() => config.hsts.include_subdomains = !config.hsts.include_subdomains} aria-label="Toggle Include Subdomains" type="button">
+									<button class="toggle-btn" class:active={config.hsts!.include_subdomains} onclick={() => config.hsts!.include_subdomains = !config.hsts!.include_subdomains} aria-label="Toggle Include Subdomains" type="button">
 										<span class="toggle-track"><span class="toggle-thumb"></span></span>
 									</button>
 								</div>
@@ -1207,7 +1260,7 @@ function addServerAlias() { serverAliasesList = [...serverAliasesList, { value: 
 										<span class="toggle-card-label">Preload</span>
 										<span class="toggle-card-desc">Allow inclusion in browser preload lists for HSTS.</span>
 									</div>
-									<button class="toggle-btn" class:active={config.hsts.preload} onclick={() => config.hsts.preload = !config.hsts.preload} aria-label="Toggle Preload" type="button">
+									<button class="toggle-btn" class:active={config.hsts!.preload} onclick={() => config.hsts!.preload = !config.hsts!.preload} aria-label="Toggle Preload" type="button">
 										<span class="toggle-track"><span class="toggle-thumb"></span></span>
 									</button>
 								</div>
@@ -1235,7 +1288,7 @@ function addServerAlias() { serverAliasesList = [...serverAliasesList, { value: 
 										<span class="toggle-card-label">Dynamic Origin</span>
 										<span class="toggle-card-desc">Mirror the request's Origin header in the response. Required when using credentials.</span>
 									</div>
-									<button class="toggle-btn" class:active={config.cors.dynamic} onclick={() => config.cors.dynamic = !config.cors.dynamic} aria-label="Toggle Dynamic Origin" type="button">
+									<button class="toggle-btn" class:active={config.cors!.dynamic} onclick={() => config.cors!.dynamic = !config.cors!.dynamic} aria-label="Toggle Dynamic Origin" type="button">
 										<span class="toggle-track"><span class="toggle-thumb"></span></span>
 									</button>
 								</div>
@@ -1244,12 +1297,12 @@ function addServerAlias() { serverAliasesList = [...serverAliasesList, { value: 
 										<span class="toggle-card-label">Allow Credentials</span>
 										<span class="toggle-card-desc">Let browsers send cookies and auth headers in cross-origin requests.</span>
 									</div>
-									<button class="toggle-btn" class:active={config.cors.allow_credentials} onclick={() => config.cors.allow_credentials = !config.cors.allow_credentials} aria-label="Toggle Allow Credentials" type="button">
+									<button class="toggle-btn" class:active={config.cors!.allow_credentials} onclick={() => config.cors!.allow_credentials = !config.cors!.allow_credentials} aria-label="Toggle Allow Credentials" type="button">
 										<span class="toggle-track"><span class="toggle-thumb"></span></span>
 									</button>
 								</div>
 							</div>
-							{#if !config.cors.dynamic}
+							{#if !config.cors!.dynamic}
 								<div class="sub nested">
 									<div class="sub-header">
 										<div>
@@ -1281,8 +1334,8 @@ function addServerAlias() { serverAliasesList = [...serverAliasesList, { value: 
 								<p class="field-desc">HTTP methods that cross-origin requests are allowed to use.</p>
 								<div class="chip-group">
 									{#each HTTP_METHODS as method}
-										<button type="button" class="chip" class:active={config.cors.allowed_methods?.includes(method)}
-											onclick={() => config.cors.allowed_methods = toggleChip(config.cors.allowed_methods || [], method)}>
+										<button type="button" class="chip" class:active={config.cors!.allowed_methods?.includes(method)}
+											onclick={() => config.cors!.allowed_methods = toggleChip(config.cors!.allowed_methods || [], method)}>
 											{method}
 										</button>
 									{/each}
@@ -1293,14 +1346,14 @@ function addServerAlias() { serverAliasesList = [...serverAliasesList, { value: 
 								<label>Allowed Headers</label>
 								<p class="field-desc">HTTP headers that cross-origin requests can include. Select <code>* (All)</code> to allow any header.</p>
 								<div class="chip-group">
-									<button type="button" class="chip" class:active={config.cors.allowed_headers?.includes('*')}
-										onclick={() => config.cors.allowed_headers = config.cors.allowed_headers?.includes('*') ? [] : ['*']}>
+									<button type="button" class="chip" class:active={config.cors!.allowed_headers?.includes('*')}
+										onclick={() => config.cors!.allowed_headers = config.cors!.allowed_headers?.includes('*') ? [] : ['*']}>
 										* (All)
 									</button>
-									{#if !config.cors.allowed_headers?.includes('*')}
+									{#if !config.cors!.allowed_headers?.includes('*')}
 										{#each CORS_HEADERS as hdr}
-											<button type="button" class="chip" class:active={config.cors.allowed_headers?.includes(hdr)}
-												onclick={() => config.cors.allowed_headers = toggleChip(config.cors.allowed_headers || [], hdr)}>
+											<button type="button" class="chip" class:active={config.cors!.allowed_headers?.includes(hdr)}
+												onclick={() => config.cors!.allowed_headers = toggleChip(config.cors!.allowed_headers || [], hdr)}>
 												{hdr}
 											</button>
 										{/each}
@@ -1313,8 +1366,8 @@ function addServerAlias() { serverAliasesList = [...serverAliasesList, { value: 
 								<p class="field-desc">How long browsers can cache preflight (OPTIONS) responses. Longer values reduce extra requests.</p>
 								<div class="chip-group">
 									{#each CORS_MAX_AGE_PRESETS as preset}
-										<button type="button" class="chip" class:active={config.cors.max_age === preset.value}
-											onclick={() => config.cors.max_age = preset.value}>
+										<button type="button" class="chip" class:active={config.cors!.max_age === preset.value}
+											onclick={() => config.cors!.max_age = preset.value}>
 											{preset.label}
 										</button>
 									{/each}
@@ -1343,8 +1396,8 @@ function addServerAlias() { serverAliasesList = [...serverAliasesList, { value: 
 								<p class="field-desc">Controls whether this page can be embedded in an iframe. <code>DENY</code> blocks all framing, <code>SAMEORIGIN</code> allows framing by your own site only.</p>
 								<div class="chip-group">
 									{#each [{l:'SAMEORIGIN',v:'SAMEORIGIN'},{l:'DENY',v:'DENY'}] as opt}
-										<button type="button" class="chip" class:active={config.security_headers.x_frame_options === opt.v}
-											onclick={() => config.security_headers.x_frame_options = opt.v}>
+										<button type="button" class="chip" class:active={config.security_headers!.x_frame_options === opt.v}
+											onclick={() => config.security_headers!.x_frame_options = opt.v}>
 											{opt.l}
 										</button>
 									{/each}
@@ -1356,8 +1409,8 @@ function addServerAlias() { serverAliasesList = [...serverAliasesList, { value: 
 								<p class="field-desc">Controls how much referrer URL info is sent when navigating away. Stricter policies protect user privacy but may break analytics.</p>
 								<div class="chip-group">
 									{#each ['no-referrer', 'strict-origin', 'strict-origin-when-cross-origin', 'same-origin', 'origin'] as pol}
-										<button type="button" class="chip" class:active={config.security_headers.referrer_policy === pol}
-											onclick={() => config.security_headers.referrer_policy = pol}>
+										<button type="button" class="chip" class:active={config.security_headers!.referrer_policy === pol}
+											onclick={() => config.security_headers!.referrer_policy = pol}>
 											{pol}
 										</button>
 									{/each}
@@ -1369,10 +1422,10 @@ function addServerAlias() { serverAliasesList = [...serverAliasesList, { value: 
 								<p class="field-desc">Block browser features you don't use. Selected features below will be <strong>disabled</strong> for this site, reducing your attack surface.</p>
 								<div class="chip-group">
 									{#each PERMISSIONS as perm}
-										<button type="button" class="chip chip-deny" class:active={parsePermissionsPolicy(config.security_headers.permissions_policy).includes(perm)}
+										<button type="button" class="chip chip-deny" class:active={parsePermissionsPolicy(config.security_headers!.permissions_policy).includes(perm)}
 											onclick={() => {
-												const current = parsePermissionsPolicy(config.security_headers.permissions_policy);
-												config.security_headers.permissions_policy = buildPermissionsPolicy(toggleChip(current, perm));
+												const current = parsePermissionsPolicy(config.security_headers!.permissions_policy);
+												config.security_headers!.permissions_policy = buildPermissionsPolicy(toggleChip(current, perm));
 											}}>
 											{perm}
 										</button>
@@ -1382,7 +1435,7 @@ function addServerAlias() { serverAliasesList = [...serverAliasesList, { value: 
 							<div class="field">
 								<label for="host-csp">Content Security Policy (CSP)</label>
 								<p class="field-desc">Define which resources (scripts, styles, images, etc.) the browser is allowed to load. A strong CSP is one of the best defenses against XSS attacks.</p>
-								<input id="host-csp" type="text" bind:value={config.security_headers.csp} placeholder="default-src 'self'; script-src 'self' 'unsafe-inline'" />
+								<input id="host-csp" type="text" bind:value={config.security_headers!.csp} placeholder="default-src 'self'; script-src 'self' 'unsafe-inline'" />
 							</div>
 						{/if}
 					</div>
@@ -1413,8 +1466,8 @@ function addServerAlias() { serverAliasesList = [...serverAliasesList, { value: 
 									<p class="field-desc">Time to establish a connection to the upstream.</p>
 									<div class="chip-group">
 										{#each TIMEOUT_PRESETS as t}
-											<button type="button" class="chip" class:active={config.timeouts.connect === t.value}
-												onclick={() => config.timeouts.connect = t.value}>{t.label}</button>
+											<button type="button" class="chip" class:active={config.timeouts!.connect === t.value}
+												onclick={() => config.timeouts!.connect = t.value}>{t.label}</button>
 										{/each}
 									</div>
 								</div>
@@ -1424,8 +1477,8 @@ function addServerAlias() { serverAliasesList = [...serverAliasesList, { value: 
 									<p class="field-desc">Time to transmit the request to the upstream.</p>
 									<div class="chip-group">
 										{#each TIMEOUT_PRESETS as t}
-											<button type="button" class="chip" class:active={config.timeouts.send === t.value}
-												onclick={() => config.timeouts.send = t.value}>{t.label}</button>
+											<button type="button" class="chip" class:active={config.timeouts!.send === t.value}
+												onclick={() => config.timeouts!.send = t.value}>{t.label}</button>
 										{/each}
 									</div>
 								</div>
@@ -1435,8 +1488,8 @@ function addServerAlias() { serverAliasesList = [...serverAliasesList, { value: 
 									<p class="field-desc">Time to wait for the upstream's response.</p>
 									<div class="chip-group">
 										{#each TIMEOUT_PRESETS as t}
-											<button type="button" class="chip" class:active={config.timeouts.read === t.value}
-												onclick={() => config.timeouts.read = t.value}>{t.label}</button>
+											<button type="button" class="chip" class:active={config.timeouts!.read === t.value}
+												onclick={() => config.timeouts!.read = t.value}>{t.label}</button>
 										{/each}
 									</div>
 								</div>
@@ -1477,7 +1530,7 @@ function addServerAlias() { serverAliasesList = [...serverAliasesList, { value: 
 									<span class="toggle-card-label">Compression</span>
 									<span class="toggle-card-desc">Toggle gzip on or off. When off, nginx sends an explicit <code>gzip off</code> directive.</span>
 								</div>
-								<button class="toggle-btn" class:active={config.gzip.enabled} onclick={() => config.gzip.enabled = !config.gzip.enabled} aria-label="Toggle Compression" type="button">
+								<button class="toggle-btn" class:active={config.gzip!.enabled} onclick={() => config.gzip!.enabled = !config.gzip!.enabled} aria-label="Toggle Compression" type="button">
 									<span class="toggle-track"><span class="toggle-thumb"></span></span>
 								</button>
 							</div>
@@ -1488,8 +1541,8 @@ function addServerAlias() { serverAliasesList = [...serverAliasesList, { value: 
 									<p class="field-desc">Which content types to compress. Text and code formats benefit the most.</p>
 									<div class="chip-group">
 										{#each GZIP_TYPES as gtype}
-											<button type="button" class="chip" class:active={config.gzip.types?.includes(gtype.value)}
-												onclick={() => config.gzip.types = toggleChip(config.gzip.types || [], gtype.value)}>
+											<button type="button" class="chip" class:active={config.gzip!.types?.includes(gtype.value)}
+												onclick={() => config.gzip!.types = toggleChip(config.gzip!.types || [], gtype.value)}>
 												{gtype.label}
 											</button>
 										{/each}
@@ -1502,8 +1555,8 @@ function addServerAlias() { serverAliasesList = [...serverAliasesList, { value: 
 										<p class="field-desc">Don't compress responses smaller than this. Compressing tiny files wastes CPU.</p>
 										<div class="chip-group">
 											{#each GZIP_MINLEN_PRESETS as p}
-												<button type="button" class="chip" class:active={config.gzip.min_length === p.value}
-													onclick={() => config.gzip.min_length = p.value}>{p.label}</button>
+												<button type="button" class="chip" class:active={config.gzip!.min_length === p.value}
+													onclick={() => config.gzip!.min_length = p.value}>{p.label}</button>
 											{/each}
 										</div>
 									</div>
@@ -1513,8 +1566,8 @@ function addServerAlias() { serverAliasesList = [...serverAliasesList, { value: 
 										<p class="field-desc">Higher levels compress more but use more CPU. Level 4-6 is a good balance.</p>
 										<div class="chip-group">
 											{#each GZIP_LEVEL_PRESETS as p}
-												<button type="button" class="chip" class:active={config.gzip.comp_level === p.value}
-													onclick={() => config.gzip.comp_level = p.value}>{p.label}</button>
+												<button type="button" class="chip" class:active={config.gzip!.comp_level === p.value}
+													onclick={() => config.gzip!.comp_level = p.value}>{p.label}</button>
 											{/each}
 										</div>
 									</div>
@@ -1542,7 +1595,7 @@ function addServerAlias() { serverAliasesList = [...serverAliasesList, { value: 
 									<span class="toggle-card-label">Buffering</span>
 									<span class="toggle-card-desc">When off, responses stream directly from upstream to client with no buffering.</span>
 								</div>
-								<button class="toggle-btn" class:active={config.proxy_buffering.enabled} onclick={() => config.proxy_buffering.enabled = !config.proxy_buffering.enabled} aria-label="Toggle Buffering" type="button">
+								<button class="toggle-btn" class:active={config.proxy_buffering!.enabled} onclick={() => config.proxy_buffering!.enabled = !config.proxy_buffering!.enabled} aria-label="Toggle Buffering" type="button">
 									<span class="toggle-track"><span class="toggle-thumb"></span></span>
 								</button>
 							</div>
@@ -1554,8 +1607,8 @@ function addServerAlias() { serverAliasesList = [...serverAliasesList, { value: 
 										<p class="field-desc">Size of a single buffer for the first part of the response (headers).</p>
 										<div class="chip-group">
 											{#each BUFFER_SIZE_PRESETS as s}
-												<button type="button" class="chip" class:active={config.proxy_buffering.buffer_size === s}
-													onclick={() => config.proxy_buffering.buffer_size = s}>{s}</button>
+												<button type="button" class="chip" class:active={config.proxy_buffering!.buffer_size === s}
+													onclick={() => config.proxy_buffering!.buffer_size = s}>{s}</button>
 											{/each}
 										</div>
 									</div>
@@ -1565,8 +1618,8 @@ function addServerAlias() { serverAliasesList = [...serverAliasesList, { value: 
 										<p class="field-desc">Number of buffers allocated for the response body.</p>
 										<div class="chip-group">
 											{#each BUFFER_COUNT_PRESETS as c}
-												<button type="button" class="chip" class:active={config.proxy_buffering.buffers_count === c}
-													onclick={() => config.proxy_buffering.buffers_count = c}>{c}</button>
+												<button type="button" class="chip" class:active={config.proxy_buffering!.buffers_count === c}
+													onclick={() => config.proxy_buffering!.buffers_count = c}>{c}</button>
 											{/each}
 										</div>
 									</div>
@@ -1576,8 +1629,8 @@ function addServerAlias() { serverAliasesList = [...serverAliasesList, { value: 
 										<p class="field-desc">Size of each body buffer.</p>
 										<div class="chip-group">
 											{#each BUFFER_SIZE_PRESETS as s}
-												<button type="button" class="chip" class:active={config.proxy_buffering.buffers_size === s}
-													onclick={() => config.proxy_buffering.buffers_size = s}>{s}</button>
+												<button type="button" class="chip" class:active={config.proxy_buffering!.buffers_size === s}
+													onclick={() => config.proxy_buffering!.buffers_size = s}>{s}</button>
 											{/each}
 										</div>
 									</div>
@@ -1622,7 +1675,7 @@ function addServerAlias() { serverAliasesList = [...serverAliasesList, { value: 
 										<span class="toggle-card-label">SSL Verify</span>
 										<span class="toggle-card-desc">Validate the upstream's SSL certificate. Turn off for self-signed certs in development.</span>
 									</div>
-									<button class="toggle-btn" class:active={config.proxy_ssl.verify} onclick={() => config.proxy_ssl.verify = !config.proxy_ssl.verify} aria-label="Toggle SSL Verify" type="button">
+									<button class="toggle-btn" class:active={config.proxy_ssl!.verify} onclick={() => config.proxy_ssl!.verify = !config.proxy_ssl!.verify} aria-label="Toggle SSL Verify" type="button">
 										<span class="toggle-track"><span class="toggle-thumb"></span></span>
 									</button>
 								</div>
@@ -1631,7 +1684,7 @@ function addServerAlias() { serverAliasesList = [...serverAliasesList, { value: 
 										<span class="toggle-card-label">Server Name (SNI)</span>
 										<span class="toggle-card-desc">Pass the domain name during the TLS handshake. Required when upstreams serve multiple domains.</span>
 									</div>
-									<button class="toggle-btn" class:active={config.proxy_ssl.server_name} onclick={() => config.proxy_ssl.server_name = !config.proxy_ssl.server_name} aria-label="Toggle Server Name" type="button">
+									<button class="toggle-btn" class:active={config.proxy_ssl!.server_name} onclick={() => config.proxy_ssl!.server_name = !config.proxy_ssl!.server_name} aria-label="Toggle Server Name" type="button">
 										<span class="toggle-track"><span class="toggle-thumb"></span></span>
 									</button>
 								</div>
@@ -1864,8 +1917,8 @@ function addServerAlias() { serverAliasesList = [...serverAliasesList, { value: 
 								</p>
 								<div class="chip-group">
 									{#each [{l:'Round Robin',v:'round-robin'},{l:'Least Connections',v:'least-conn'},{l:'IP Hash',v:'ip-hash'}] as m}
-										<button type="button" class="chip" class:active={config.load_balancing.method === m.v}
-											onclick={() => config.load_balancing.method = m.v}>{m.l}</button>
+										<button type="button" class="chip" class:active={config.load_balancing!.method === m.v}
+											onclick={() => config.load_balancing!.method = m.v}>{m.l}</button>
 									{/each}
 								</div>
 							</div>
@@ -1949,8 +2002,8 @@ function addServerAlias() { serverAliasesList = [...serverAliasesList, { value: 
 									{#each backups as b}
 										<tr>
 											<td class="backup-filename">{b.filename}</td>
-											<td class="backup-date">{formatBackupDate(b.timestamp)}</td>
-											<td class="backup-size">{formatBytes(b.size_bytes)}</td>
+											<td class="backup-date">{formatBackupDate(b.timestamp ?? b.created_at)}</td>
+											<td class="backup-size">{formatBytes(b.size_bytes ?? b.size)}</td>
 											<td class="backup-action">
 												<button class="btn-view" onclick={() => openBackupViewer(b)}>View</button>
 												<button

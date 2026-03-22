@@ -36,10 +36,10 @@ func formatAlertBody(alert models.AlertPayload, panelURL string) string {
 
 	sb.WriteString(alert.Message)
 	sb.WriteString("\n\n---\n")
-	sb.WriteString(fmt.Sprintf("Alert Type: %s\n", alert.AlertType))
-	sb.WriteString(fmt.Sprintf("Severity: %s\n", alert.Severity))
-	sb.WriteString(fmt.Sprintf("Time: %s\n", time.Now().UTC().Format("2006-01-02 15:04:05 UTC")))
-	sb.WriteString(fmt.Sprintf("\nManage your alerts: %s/alerts\n", panelURL))
+	fmt.Fprintf(&sb, "Alert Type: %s\n", alert.AlertType)
+	fmt.Fprintf(&sb, "Severity: %s\n", alert.Severity)
+	fmt.Fprintf(&sb, "Time: %s\n", time.Now().UTC().Format("2006-01-02 15:04:05 UTC"))
+	fmt.Fprintf(&sb, "\nManage your alerts: %s/alerts\n", panelURL)
 	sb.WriteString("\n— Proxera")
 
 	return sb.String()

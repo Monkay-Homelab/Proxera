@@ -1,24 +1,25 @@
-<script>
+<script lang="ts">
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { api } from '$lib/api';
 	import { formatRelativeTime } from '$lib/utils';
+	import type { Agent } from '$lib/types';
 
-	let agents = [];
+	let agents: Agent[] = [];
 	let loading = true;
-	let error = null;
+	let error: string | null = null;
 
 	onMount(async () => {
 		try {
 			const resp = await api('/api/agents');
 			if (!resp.ok) throw new Error('Failed to fetch agents');
 			agents = await resp.json();
-		} catch (err) { error = err.message; }
+		} catch (err) { error = err instanceof Error ? err.message : String(err); }
 		finally { loading = false; }
 	});
 
 
-	function isOnline(agent) {
+	function isOnline(agent: Agent) {
 		if (!agent.last_seen) return false;
 		return (Date.now() - new Date(agent.last_seen).getTime()) < 90000;
 	}

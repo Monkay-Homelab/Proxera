@@ -2,8 +2,12 @@
 	import { toasts } from './toast';
 	import type { ToastItem } from './toast';
 
-	let items: ToastItem[] = [];
-	toasts.subscribe(v => items = v);
+	let items: ToastItem[] = $state([]);
+
+	$effect(() => {
+		const unsubscribe = toasts.subscribe(v => items = v);
+		return unsubscribe;
+	});
 
 	function dismiss(id: number) {
 		toasts.update(t => t.filter(i => i.id !== id));
@@ -24,7 +28,7 @@
 					{/if}
 				</span>
 				<span class="toast-msg">{item.message}</span>
-				<button class="toast-close" on:click={() => dismiss(item.id)} aria-label="Dismiss">
+				<button class="toast-close" onclick={() => dismiss(item.id)} aria-label="Dismiss">
 					<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
 				</button>
 			</div>

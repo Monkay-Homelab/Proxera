@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/gofiber/fiber/v2/middleware/logger"
 	"github.com/proxera/backend/internal/api/handlers"
 	"github.com/proxera/backend/internal/api/middleware"
+	"github.com/proxera/backend/internal/database"
 	"github.com/proxera/backend/internal/reqstats"
 )
 
@@ -65,6 +67,11 @@ func SetupRoutes(app *fiber.App) {
 	setup.Use(middleware.Auth, middleware.FlatRateLimit)
 	setup.Get("/status", handlers.SetupStatus)
 	setup.Post("/crowdsec-eula", middleware.AdminOnly, handlers.AcceptCrowdSecEULA)
+
+	// System routes (protected — all authenticated users)
+	system := api.Group("/system")
+	system.Use(middleware.Auth, middleware.FlatRateLimit)
+	system.Get("/status", handlers.GetSystemStatus)
 
 	// User routes (protected)
 	user := api.Group("/user")
@@ -240,11 +247,43 @@ func SetupRoutes(app *fiber.App) {
 
 	app.Get("/ws/agent", middleware.AgentAuth, websocket.New(handlers.AgentWebSocket))
 
-	// Health check
+	// Health check (liveness)
 	app.Get("/health", func(c *fiber.Ctx) error {
 		return c.JSON(fiber.Map{
 			"status":  "ok",
 			"service": "proxera-api",
+		})
+	})
+
+	// Readiness check (deep health — verifies database connectivity)
+	app.Get("/ready", func(c *fiber.Ctx) error {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+
+		start := time.Now()
+		err := database.DB.Ping(ctx)
+		latencyMs := float64(time.Since(start).Microseconds()) / 1000.0
+
+		if err != nil {
+			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
+				"status": "error",
+				"checks": fiber.Map{
+					"database": fiber.Map{
+						"status": "error",
+						"error":  err.Error(),
+					},
+				},
+			})
+		}
+
+		return c.JSON(fiber.Map{
+			"status": "ok",
+			"checks": fiber.Map{
+				"database": fiber.Map{
+					"status":     "ok",
+					"latency_ms": latencyMs,
+				},
+			},
 		})
 	})
 }

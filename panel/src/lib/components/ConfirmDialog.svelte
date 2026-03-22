@@ -2,18 +2,18 @@
 	import { confirmState } from './confirm';
 	import type { ConfirmState } from './confirm';
 
-	let state: ConfirmState = { open: false, title: '', message: '', confirmLabel: 'Confirm', danger: false, resolve: null };
-	confirmState.subscribe(v => state = v);
+	let confirmData: ConfirmState = $state({ open: false, title: '', message: '', confirmLabel: 'Confirm', danger: false, resolve: null });
+	confirmState.subscribe(v => confirmData = v);
 
-	let dialog: HTMLDivElement | undefined;
+	let dialog: HTMLDivElement | undefined = $state();
 
 	function answer(value: boolean) {
-		if (state.resolve) state.resolve(value);
+		if (confirmData.resolve) confirmData.resolve(value);
 		confirmState.update(s => ({ ...s, open: false, resolve: null }));
 	}
 
 	function handleKeydown(e: KeyboardEvent) {
-		if (!state.open) return;
+		if (!confirmData.open) return;
 		if (e.key === 'Escape') { answer(false); return; }
 		if (e.key === 'Tab' && dialog) {
 			const focusable = dialog.querySelectorAll<HTMLElement>('button');
@@ -25,25 +25,27 @@
 		}
 	}
 
-	$: if (state.open && dialog) {
-		// Auto-focus first button on open
-		requestAnimationFrame(() => {
-			const btn = dialog?.querySelector<HTMLElement>('button');
-			btn?.focus();
-		});
-	}
+	$effect(() => {
+		if (confirmData.open && dialog) {
+			// Auto-focus first button on open
+			requestAnimationFrame(() => {
+				const btn = dialog?.querySelector<HTMLElement>('button');
+				btn?.focus();
+			});
+		}
+	});
 </script>
 
-<svelte:window on:keydown={handleKeydown} />
+<svelte:window onkeydown={handleKeydown} />
 
-{#if state.open}
-	<div class="confirm-overlay" on:click={() => answer(false)} on:keydown={() => {}} role="presentation">
-		<div class="confirm-dialog" bind:this={dialog} on:click|stopPropagation on:keydown|stopPropagation role="dialog" aria-modal="true" aria-labelledby="confirm-title" tabindex="-1">
-			<h3 id="confirm-title">{state.title}</h3>
-			<p>{state.message}</p>
+{#if confirmData.open}
+	<div class="confirm-overlay" onclick={() => answer(false)} onkeydown={() => {}} role="presentation">
+		<div class="confirm-dialog" bind:this={dialog} onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-labelledby="confirm-title" tabindex="-1">
+			<h3 id="confirm-title">{confirmData.title}</h3>
+			<p>{confirmData.message}</p>
 			<div class="confirm-actions">
-				<button class="btn-ghost" on:click={() => answer(false)}>Cancel</button>
-				<button class="confirm-btn" class:confirm-danger={state.danger} on:click={() => answer(true)}>{state.confirmLabel}</button>
+				<button class="btn-ghost" onclick={() => answer(false)}>Cancel</button>
+				<button class="confirm-btn" class:confirm-danger={confirmData.danger} onclick={() => answer(true)}>{confirmData.confirmLabel}</button>
 			</div>
 		</div>
 	</div>

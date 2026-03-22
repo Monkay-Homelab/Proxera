@@ -176,7 +176,7 @@ func authenticateAPIKey(key string) (int, error) {
 
 	// Update last_used_at in background
 	go func() {
-		database.DB.Exec(context.Background(),
+		_, _ = database.DB.Exec(context.Background(),
 			`UPDATE user_api_keys SET last_used_at = NOW() WHERE key_hash = $1`, keyHash)
 	}()
 

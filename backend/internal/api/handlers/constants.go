@@ -38,6 +38,14 @@ const (
 	AgentOfflineThreshold = 90 * time.Second
 )
 
+// Concurrency limits
+const (
+	// MaxConcurrentAlertEvals is the maximum number of alert evaluation goroutines
+	// that can run concurrently across all agents. Excess evaluations are serialized,
+	// not dropped. 10 is generous for self-hosted deployments (typically 1-5 agents).
+	MaxConcurrentAlertEvals = 10
+)
+
 // HTTP client timeouts
 const (
 	// HTTPClientTimeout is the default timeout for outbound HTTP requests.

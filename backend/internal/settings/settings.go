@@ -10,8 +10,14 @@ import (
 	"github.com/proxera/backend/internal/database"
 )
 
-// Get returns a setting value. Checks DB first, then env, then defaultVal.
+// Get returns a setting value. Checks the in-memory cache first, then DB,
+// then env, then defaultVal. DB results are cached with a 30-second TTL.
 func Get(key string, defaultVal string) string {
+	// Check cache first.
+	if val, ok := cache.get(key); ok {
+		return val
+	}
+
 	if database.DB != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
@@ -20,6 +26,7 @@ func Get(key string, defaultVal string) string {
 			`SELECT value FROM system_settings WHERE key = $1`, key,
 		).Scan(&val)
 		if err == nil && val != "" {
+			cache.set(key, val)
 			return val
 		}
 	}

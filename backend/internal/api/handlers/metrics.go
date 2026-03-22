@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"sort"
 	"strings"
 	"sync"
@@ -40,13 +40,11 @@ func InsertMetricsBuckets(agentID string, buckets []models.IncomingMetricsBucket
 			sb.WriteString(", ")
 		}
 		base := i * 21
-		sb.WriteString(fmt.Sprintf(
-			"($%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d)",
+		fmt.Fprintf(&sb, "($%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d)",
 			base+1, base+2, base+3, base+4, base+5, base+6,
 			base+7, base+8, base+9, base+10, base+11, base+12,
 			base+13, base+14, base+15, base+16, base+17,
-			base+18, base+19, base+20, base+21,
-		))
+			base+18, base+19, base+20, base+21)
 
 		ts, err := time.Parse(time.RFC3339, b.Timestamp)
 		if err != nil {
@@ -103,8 +101,8 @@ func InsertVisitorIPs(agentID string, buckets []models.IncomingMetricsBucket) er
 				sb.WriteString(", ")
 			}
 			base := idx * 5
-			sb.WriteString(fmt.Sprintf("($%d,$%d,$%d,$%d,$%d)",
-				base+1, base+2, base+3, base+4, base+5))
+			fmt.Fprintf(&sb, "($%d,$%d,$%d,$%d,$%d)",
+				base+1, base+2, base+3, base+4, base+5)
 			args = append(args, ts, agentID, b.Domain, ip, count)
 			idx++
 		}
@@ -139,7 +137,7 @@ func defaultRangeConfig(rangeParam string) rangeConfig {
 	case "24h":
 		return rangeConfig{24 * time.Hour, "15 minutes", true, "raw"}
 	case "7d":
-		return rangeConfig{7 * 24 * time.Hour, "1 hour", true, "raw"}
+		return rangeConfig{7 * 24 * time.Hour, "1 hour", true, "hourly"}
 	case "30d":
 		return rangeConfig{30 * 24 * time.Hour, "1 day", true, "hourly"}
 	case "90d":
@@ -239,7 +237,7 @@ func queryMetrics(agentIDs []string, rc rangeConfig, domain string) ([]models.Me
 			&b.CacheHits, &b.CacheMisses, &b.UniqueIPs, &b.ConnectionCount,
 		)
 		if err != nil {
-			log.Printf("Failed to scan metrics row: %v", err)
+			slog.Error("failed to scan metrics row", "component", "metrics", "error", err)
 			continue
 		}
 		buckets = append(buckets, b)
@@ -254,7 +252,7 @@ func queryMetrics(agentIDs []string, rc rangeConfig, domain string) ([]models.Me
 		summary.Total5xx += b.Status5xx
 	}
 	if err := rows.Err(); err != nil {
-		log.Printf("Error iterating metrics rows: %v", err)
+		slog.Error("error iterating metrics rows", "component", "metrics", "error", err)
 	}
 
 	if summary.TotalRequests > 0 {
@@ -312,7 +310,7 @@ func GetAgentMetrics(c *fiber.Ctx) error {
 
 	buckets, summary, domains, err := queryMetrics([]string{agentID}, rc, domain)
 	if err != nil {
-		log.Printf("Failed to query metrics: %v", err)
+		slog.Error("failed to query metrics", "component", "metrics", "error", err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to query metrics"})
 	}
 
@@ -340,7 +338,7 @@ func GetGlobalMetrics(c *fiber.Ctx) error {
 
 	agentRows, err := database.DB.Query(context.Background(), agentQuery, agentArgs...)
 	if err != nil {
-		log.Printf("Failed to query agents: %v", err)
+		slog.Error("failed to query agents", "component", "metrics", "error", err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to query agents"})
 	}
 	defer agentRows.Close()
@@ -350,14 +348,14 @@ func GetGlobalMetrics(c *fiber.Ctx) error {
 	for agentRows.Next() {
 		var a models.AgentSummary
 		if err := agentRows.Scan(&a.AgentID, &a.Name, &a.Status); err != nil {
-			log.Printf("Failed to scan agent row: %v", err)
+			slog.Error("failed to scan agent row", "component", "metrics", "error", err)
 			continue
 		}
 		allAgents = append(allAgents, a)
 		allAgentIDs = append(allAgentIDs, a.AgentID)
 	}
 	if err := agentRows.Err(); err != nil {
-		log.Printf("Error iterating agents for global metrics: %v", err)
+		slog.Error("error iterating agents for global metrics", "component", "metrics", "error", err)
 	}
 
 	// Determine which agent IDs to query
@@ -393,12 +391,11 @@ func GetGlobalMetrics(c *fiber.Ctx) error {
 
 	buckets, summary, domains, err := queryMetrics(queryAgentIDs, rc, domain)
 	if err != nil {
-		log.Printf("Failed to query global metrics: %v", err)
+		slog.Error("failed to query global metrics", "component", "metrics", "error", err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to query metrics"})
 	}
 
-	log.Printf("[metrics] GET /api/metrics range=%s agent=%s domain=%s → %d buckets, %d domains, %d total_requests",
-		rangeParam, agentFilter, domain, len(buckets), len(domains), summary.TotalRequests)
+	slog.Info("global metrics query", "component", "metrics", "range", rangeParam, "agent", agentFilter, "domain", domain, "count", len(buckets), "domains", len(domains), "total_requests", summary.TotalRequests)
 
 	return c.JSON(models.GlobalMetricsResponse{
 		Buckets: buckets,
@@ -497,7 +494,7 @@ func GetVisitorIPs(c *fiber.Ctx) error {
 		}
 	}
 	if err := agentRows.Err(); err != nil {
-		log.Printf("[visitors] Error iterating agent rows: %v", err)
+		slog.Error("error iterating agent rows", "component", "visitors", "error", err)
 	}
 
 	if len(agentIDs) == 0 {
@@ -568,7 +565,7 @@ func GetVisitorIPs(c *fiber.Ctx) error {
 
 	rows, err := database.DB.Query(context.Background(), query, args...)
 	if err != nil {
-		log.Printf("[visitors] Query error: %v", err)
+		slog.Error("visitor query error", "component", "visitors", "error", err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to query visitors"})
 	}
 	defer rows.Close()
@@ -578,21 +575,21 @@ func GetVisitorIPs(c *fiber.Ctx) error {
 	for rows.Next() {
 		var v models.VisitorIP
 		if err := rows.Scan(&v.IPAddress, &v.RequestCount); err != nil {
-			log.Printf("[visitors] Scan error: %v", err)
+			slog.Error("visitor scan error", "component", "visitors", "error", err)
 			continue
 		}
 		visitors = append(visitors, v)
 		ipList = append(ipList, v.IPAddress)
 	}
 	if err := rows.Err(); err != nil {
-		log.Printf("[visitors] Error iterating visitor rows: %v", err)
+		slog.Error("error iterating visitor rows", "component", "visitors", "error", err)
 	}
 
 	// Enrich with geo data
 	if len(ipList) > 0 {
 		geoData, err := LookupGeo(ipList)
 		if err != nil {
-			log.Printf("[visitors] Geo lookup error: %v", err)
+			slog.Error("geo lookup error", "component", "visitors", "error", err)
 		}
 		if geoData != nil {
 			for i, v := range visitors {
@@ -615,6 +612,10 @@ func GetVisitorIPs(c *fiber.Ctx) error {
 		Total:    len(visitors),
 	})
 }
+
+// blockedSem limits concurrent CrowdSec query goroutines in GetRecentBlocked
+// to prevent unbounded WebSocket round-trips when many agents are connected.
+var blockedSem = make(chan struct{}, 5)
 
 // BlockedEntry represents a consolidated blocked IP from CrowdSec alerts
 type BlockedEntry struct {
@@ -643,7 +644,7 @@ type CrowdSecAlert struct {
 		ASNum   string `json:"as_number"`
 		Country string `json:"cn"`
 	} `json:"source"`
-	EventsCount int  `json:"events_count"`
+	EventsCount int    `json:"events_count"`
 	StartAt     string `json:"start_at"`
 	StopAt      string `json:"stop_at"`
 	Remediation bool   `json:"remediation"`
@@ -682,7 +683,7 @@ func GetRecentBlocked(c *fiber.Ctx) error {
 		}
 	}
 	if err := rows.Err(); err != nil {
-		log.Printf("[blocked] Error iterating agent rows: %v", err)
+		slog.Error("error iterating agent rows", "component", "blocked", "error", err)
 	}
 
 	if len(agents) == 0 {
@@ -704,6 +705,8 @@ func GetRecentBlocked(c *fiber.Ctx) error {
 		wg.Add(1)
 		go func(a agentInfo) {
 			defer wg.Done()
+			blockedSem <- struct{}{}
+			defer func() { <-blockedSem }()
 
 			var alerts []CrowdSecAlert
 
@@ -830,7 +833,7 @@ func GetNginxLogs(c *fiber.Ctx) error {
 		}
 	}
 	if err := rows.Err(); err != nil {
-		log.Printf("[nginx-logs] Error iterating agent rows: %v", err)
+		slog.Error("error iterating agent rows", "component", "nginx-logs", "error", err)
 	}
 
 	if len(agentIDs) == 0 {

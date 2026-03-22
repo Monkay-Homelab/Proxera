@@ -1,17 +1,53 @@
-<script>
-	import { onDestroy } from 'svelte';
+<script lang="ts">
 	import { formatNumber, esc } from '$lib/metricsUtils';
+	import type { Visitor } from '$lib/types';
 
-	export let visitors = [];
-	export let worldGeo = null;
-	export let onTooltip = () => {};
+	interface TooltipState {
+		visible: boolean;
+		x?: number;
+		y?: number;
+		html?: string;
+	}
 
-	let canvas;
-	let countryHitAreas = [];
-	let resizeObserver;
+	interface GeoFeature {
+		id: number | string;
+		geometry: {
+			type: string;
+			coordinates: number[][][] | number[][][][];
+		};
+	}
+
+	interface WorldGeoData {
+		features: GeoFeature[];
+	}
+
+	interface CountryData {
+		count: number;
+		country: string;
+		code: string;
+	}
+
+	interface HitArea {
+		alpha2: string;
+		coords: number[][][] | number[][][][];
+		type: string;
+		data: CountryData | null;
+	}
+
+	interface Props {
+		visitors?: Visitor[];
+		worldGeo?: WorldGeoData | null;
+		onTooltip?: (state: TooltipState) => void;
+	}
+
+	let { visitors = [], worldGeo = null, onTooltip = () => {} }: Props = $props();
+
+	let canvas: HTMLCanvasElement | null = null;
+	let countryHitAreas: HitArea[] = [];
+	let resizeObserver: ResizeObserver | null = null;
 
 	/** ISO 3166-1 numeric → alpha-2 mapping for country identification */
-	const numToAlpha2 = {
+	const numToAlpha2: Record<string, string> = {
 		'4':'AF','8':'AL','12':'DZ','24':'AO','32':'AR','36':'AU','40':'AT','31':'AZ',
 		'50':'BD','56':'BE','204':'BJ','68':'BO','70':'BA','72':'BW','76':'BR','100':'BG',
 		'854':'BF','108':'BI','116':'KH','120':'CM','124':'CA','140':'CF','148':'TD','152':'CL',
@@ -31,21 +67,21 @@
 		'728':'SS','724':'ES','144':'LK','729':'SD','740':'SR','752':'SE','756':'CH','760':'SY',
 		'158':'TW','762':'TJ','834':'TZ','764':'TH','768':'TG','780':'TT','788':'TN','792':'TR',
 		'795':'TM','800':'UG','804':'UA','784':'AE','826':'GB','840':'US','858':'UY','860':'UZ',
-		'862':'VE','704':'VN','887':'YE','894':'ZM','716':'ZW','10':'AQ','112':'BY','860':'UZ',
+		'862':'VE','704':'VN','887':'YE','894':'ZM','716':'ZW','10':'AQ','112':'BY',
 		'20':'AD','174':'KM','242':'FJ','296':'KI','583':'FM','520':'NR','585':'PW','882':'WS',
 		'90':'SB','776':'TO','548':'VU','275':'PS','-99':'CY'
 	};
 
 	let mapRect = { ox: 0, oy: 0, mw: 0, mh: 0 };
 
-	function projectLng(lng) { return mapRect.ox + ((lng + 180) / 360) * mapRect.mw; }
-	function projectLat(lat) { return mapRect.oy + ((90 - lat) / 180) * mapRect.mh; }
+	function projectLng(lng: number): number { return mapRect.ox + ((lng + 180) / 360) * mapRect.mw; }
+	function projectLat(lat: number): number { return mapRect.oy + ((90 - lat) / 180) * mapRect.mh; }
 
-	function calcMapRect(w, h) {
+	function calcMapRect(w: number, h: number): void {
 		// Fit 2:1 equirectangular map within container, centered
 		const containerRatio = w / h;
 		const mapRatio = 2;
-		let mw, mh;
+		let mw: number, mh: number;
 		if (containerRatio > mapRatio) {
 			mh = h; mw = h * mapRatio;
 		} else {
@@ -54,9 +90,9 @@
 		mapRect = { ox: (w - mw) / 2, oy: (h - mh) / 2, mw, mh };
 	}
 
-	function tracePath(ctx, coords, type) {
+	function tracePath(ctx: CanvasRenderingContext2D, coords: number[][][] | number[][][][], type: string): void {
 		ctx.beginPath();
-		const rings = type === 'Polygon' ? coords : type === 'MultiPolygon' ? coords.flat() : [];
+		const rings: number[][][] = type === 'Polygon' ? coords as number[][][] : type === 'MultiPolygon' ? (coords as number[][][][]).flat() : [];
 		for (const ring of rings) {
 			let moved = false;
 			for (let i = 0; i < ring.length; i++) {
@@ -74,7 +110,7 @@
 		}
 	}
 
-	function getColor(ratio) {
+	function getColor(ratio: number): string | null {
 		if (ratio <= 0) return null;
 		// Blue ramp: low → dim accent, high → bright accent
 		const r = Math.round(30 + ratio * 78);
@@ -83,11 +119,13 @@
 		return `rgb(${r}, ${g}, ${b})`;
 	}
 
-	function draw() {
+	function draw(): void {
 		if (!canvas) return;
 		const ctx = canvas.getContext('2d');
+		if (!ctx) return;
 		const dpr = window.devicePixelRatio || 1;
 		const parent = canvas.parentElement;
+		if (!parent) return;
 		const w = parent.clientWidth;
 		const h = parent.clientHeight;
 		if (w === 0 || h === 0) return;
@@ -106,7 +144,7 @@
 		calcMapRect(w, h);
 
 		// Aggregate visitors by alpha-2 country code
-		const countryMap = {};
+		const countryMap: Record<string, CountryData> = {};
 		let maxReqs = 0;
 		for (const v of visitors) {
 			if (!v.country_code) continue;
@@ -132,7 +170,7 @@
 
 			if (data) {
 				const ratio = Math.pow(data.count / maxReqs, 0.45);
-				ctx.fillStyle = getColor(ratio);
+				ctx.fillStyle = getColor(ratio) || baseFill;
 				ctx.strokeStyle = activeBorder;
 				ctx.lineWidth = 0.8;
 			} else {
@@ -147,14 +185,15 @@
 
 			// Store hit area for hover detection
 			if (alpha2) {
-				countryHitAreas.push({ alpha2, coords, type, data });
+				countryHitAreas.push({ alpha2, coords, type, data: data || null });
 			}
 		}
 	}
 
-	function hitTest(mx, my) {
+	function hitTest(mx: number, my: number): HitArea | null {
 		if (!canvas) return null;
 		const ctx = canvas.getContext('2d');
+		if (!ctx) return null;
 		const dpr = window.devicePixelRatio || 1;
 		for (const area of countryHitAreas) {
 			if (!area.data) continue;
@@ -164,7 +203,7 @@
 		return null;
 	}
 
-	function handleHover(e) {
+	function handleHover(e: MouseEvent): void {
 		if (!canvas || countryHitAreas.length === 0) return;
 		const rect = canvas.getBoundingClientRect();
 		const mx = e.clientX - rect.left;
@@ -187,26 +226,27 @@
 		}
 	}
 
-	function handleLeave() {
+	function handleLeave(): void {
 		onTooltip({ visible: false });
 		if (canvas) canvas.style.cursor = 'default';
 	}
 
-	onDestroy(() => {
-		if (resizeObserver) resizeObserver.disconnect();
-	});
-
-	function init(node) {
+	function init(node: HTMLCanvasElement): { destroy: () => void } {
 		canvas = node;
 		resizeObserver = new ResizeObserver(() => { draw(); });
-		resizeObserver.observe(node.parentElement);
+		resizeObserver.observe(node.parentElement!);
 		draw();
 		return { destroy() { if (resizeObserver) resizeObserver.disconnect(); canvas = null; } };
 	}
 
-	$: if (canvas && (visitors || worldGeo)) {
-		setTimeout(() => draw(), 50);
-	}
+	$effect(() => {
+		// Track reactive dependencies
+		visitors;
+		worldGeo;
+		if (canvas) {
+			setTimeout(() => draw(), 50);
+		}
+	});
 </script>
 
-<canvas use:init on:mousemove={handleHover} on:mouseleave={handleLeave} aria-label="World map showing visitor locations by country"></canvas>
+<canvas use:init onmousemove={handleHover} onmouseleave={handleLeave} aria-label="World map showing visitor locations by country"></canvas>

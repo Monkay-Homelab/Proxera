@@ -1,12 +1,13 @@
-<script>
+<script lang="ts">
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { api } from '$lib/api';
 	import { navRefresh } from '$lib/navRefresh';
 	import { toastError } from '$lib/components/toast';
 	import { confirmDialog } from '$lib/components/confirm';
+	import type { DnsProvider } from '$lib/types';
 
-	let providers = [];
+	let providers: DnsProvider[] = [];
 	let loading = true;
 	let showModal = false;
 	let step = 'provider';
@@ -26,7 +27,7 @@
 		try {
 			const response = await api('/api/dns/providers');
 			if (response.ok) {
-				providers = (await response.json()).sort((a, b) => (a.domain || '').localeCompare(b.domain || ''));
+				providers = (await response.json()).sort((a: DnsProvider, b: DnsProvider) => (a.domain || '').localeCompare(b.domain || ''));
 			}
 		} catch (err) {
 			toastError('Failed to fetch domains');
@@ -35,7 +36,7 @@
 		}
 	}
 
-	async function deleteProvider(id) {
+	async function deleteProvider(id: number) {
 		if (!await confirmDialog('Are you sure you want to remove this domain?', { title: 'Remove Domain', confirmLabel: 'Remove', danger: true })) return;
 
 		try {
@@ -64,7 +65,7 @@
 		showModal = false;
 	}
 
-	function selectProvider(p) {
+	function selectProvider(p: string) {
 		selectedProvider = p;
 		step = 'credentials';
 	}
@@ -87,7 +88,7 @@
 		saving = true;
 		error = '';
 
-		const body = { provider: selectedProvider, api_key: apiKey.trim() };
+		const body: Record<string, string> = { provider: selectedProvider, api_key: apiKey.trim() };
 		if (selectedProvider === 'cloudflare') body.zone_id = zoneId.trim();
 		if (selectedProvider === 'ionos') body.domain = domain.trim();
 		if (selectedProvider === 'porkbun') { body.api_secret = apiSecret.trim(); body.domain = domain.trim(); }
@@ -108,7 +109,7 @@
 			navRefresh.update(n => n + 1);
 			closeModal();
 		} catch (err) {
-			error = err.message;
+			error = err instanceof Error ? err.message : String(err);
 		} finally {
 			saving = false;
 		}

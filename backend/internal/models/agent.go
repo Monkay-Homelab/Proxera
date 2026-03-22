@@ -10,7 +10,6 @@ type Agent struct {
 	UserID      int       `json:"-"`
 	AgentID     string    `json:"agent_id"`     // Unique identifier for the agent
 	Name        string    `json:"name"`         // Friendly name set by user
-	APIKey      string    `json:"-"`            // Authentication key (only exposed during registration)
 	Status      string    `json:"status"`       // online, offline, error
 	Version     string    `json:"version"`      // Agent version
 	OS          string    `json:"os"`           // Operating system

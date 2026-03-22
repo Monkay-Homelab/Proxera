@@ -112,7 +112,7 @@ func CreateAlertRule(c *fiber.Ctx) error {
 	// Verify channel IDs belong to this user
 	if len(body.ChannelIDs) > 0 {
 		var count int
-		database.DB.QueryRow(ctx,
+		_ = database.DB.QueryRow(ctx,
 			`SELECT COUNT(*) FROM notification_channels WHERE user_id = $1 AND id = ANY($2)`,
 			userID, body.ChannelIDs).Scan(&count)
 		if count != len(body.ChannelIDs) {
@@ -131,7 +131,7 @@ func CreateAlertRule(c *fiber.Ctx) error {
 
 	// Link channels
 	for _, chID := range body.ChannelIDs {
-		database.DB.Exec(ctx,
+		_, _ = database.DB.Exec(ctx,
 			`INSERT INTO alert_rule_channels (rule_id, channel_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
 			ruleID, chID)
 	}
@@ -224,7 +224,7 @@ func UpdateAlertRule(c *fiber.Ctx) error {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to update channel links"})
 		}
 		for _, chID := range *body.ChannelIDs {
-			database.DB.Exec(ctx,
+			_, _ = database.DB.Exec(ctx,
 				`INSERT INTO alert_rule_channels (rule_id, channel_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
 				ruleID, chID)
 		}
@@ -381,13 +381,13 @@ func UpdateChannel(c *fiber.Ctx) error {
 	}
 
 	if body.Name != nil {
-		database.DB.Exec(ctx, `UPDATE notification_channels SET name = $1, updated_at = NOW() WHERE id = $2`, *body.Name, channelID)
+		_, _ = database.DB.Exec(ctx, `UPDATE notification_channels SET name = $1, updated_at = NOW() WHERE id = $2`, *body.Name, channelID)
 	}
 	if body.Config != nil {
-		database.DB.Exec(ctx, `UPDATE notification_channels SET config = $1, updated_at = NOW() WHERE id = $2`, *body.Config, channelID)
+		_, _ = database.DB.Exec(ctx, `UPDATE notification_channels SET config = $1, updated_at = NOW() WHERE id = $2`, *body.Config, channelID)
 	}
 	if body.Enabled != nil {
-		database.DB.Exec(ctx, `UPDATE notification_channels SET enabled = $1, updated_at = NOW() WHERE id = $2`, *body.Enabled, channelID)
+		_, _ = database.DB.Exec(ctx, `UPDATE notification_channels SET enabled = $1, updated_at = NOW() WHERE id = $2`, *body.Enabled, channelID)
 	}
 
 	return c.JSON(fiber.Map{"message": "Channel updated"})
@@ -517,16 +517,17 @@ func ListAlertHistory(c *fiber.Ctx) error {
 		args = append(args, severity)
 		argIdx++
 	}
-	if resolvedParam == "true" {
+	switch resolvedParam {
+	case "true":
 		whereClause += ` AND resolved = true`
-	} else if resolvedParam == "false" {
+	case "false":
 		whereClause += ` AND resolved = false`
 	}
 
 	// Get total count with same filters
 	var total int
 	countQuery := `SELECT COUNT(*) FROM alert_history` + whereClause
-	database.DB.QueryRow(ctx, countQuery, args...).Scan(&total)
+	_ = database.DB.QueryRow(ctx, countQuery, args...).Scan(&total)
 
 	query := `SELECT id, rule_id, alert_type, severity, title, message, metadata, resolved, resolved_at, created_at
 		FROM alert_history` + whereClause +
@@ -670,7 +671,7 @@ func QuickSetupAlerts(c *fiber.Ctx) error {
 			continue
 		}
 		for _, chID := range channelIDs {
-			database.DB.Exec(ctx,
+			_, _ = database.DB.Exec(ctx,
 				`INSERT INTO alert_rule_channels (rule_id, channel_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
 				ruleID, chID)
 		}

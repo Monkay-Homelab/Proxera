@@ -62,6 +62,8 @@ FROM alpine:3.21
 RUN apk add --no-cache ca-certificates curl && \
     mkdir -p /etc/nginx/ssl /etc/nginx/conf.d /var/log/nginx /var/lib/proxera
 
+RUN addgroup -S proxera && adduser -S proxera -G proxera
+
 COPY --from=docker-cli /usr/local/bin/docker /usr/bin/docker
 
 WORKDIR /app
@@ -70,5 +72,8 @@ COPY --from=agent-builder /proxera-linux-amd64 ./downloads/
 COPY --from=agent-builder /proxera-linux-arm64 ./downloads/
 COPY backend/install.sh ./install.sh
 
+RUN chown -R proxera:proxera /app /etc/nginx /var/log/nginx /var/lib/proxera
+
 EXPOSE 5173
+USER proxera
 ENTRYPOINT ["./proxera-control"]

@@ -1,8 +1,10 @@
 import { sveltekit } from '@sveltejs/kit/vite';
 import { defineConfig } from 'vite';
 
+declare const process: { env: Record<string, string | undefined> };
+
 const extraHosts = process.env.VITE_ALLOWED_HOSTS
-	? process.env.VITE_ALLOWED_HOSTS.split(',').map(h => h.trim())
+	? process.env.VITE_ALLOWED_HOSTS.split(',').map((h: string) => h.trim())
 	: [];
 
 const panelHost = process.env.VITE_PANEL_HOST || '';

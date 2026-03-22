@@ -1,9 +1,10 @@
-<script>
+<script lang="ts">
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { api } from '$lib/api';
+	import type { DnsProvider } from '$lib/types';
 
-	let domains = [];
+	let domains: DnsProvider[] = [];
 	let loading = true;
 
 	onMount(() => {
@@ -14,7 +15,7 @@
 		try {
 			const response = await api('/api/dns/providers');
 			if (response.ok) {
-				domains = (await response.json()).sort((a, b) => (a.domain || '').localeCompare(b.domain || ''));
+				domains = (await response.json()).sort((a: DnsProvider, b: DnsProvider) => (a.domain || '').localeCompare(b.domain || ''));
 			}
 		} catch (err) {
 			console.error('Failed to fetch domains:', err);

@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"time"
 
 	"github.com/proxera/backend/internal/database"
@@ -62,7 +62,7 @@ func Dispatch(ctx context.Context, userID int, ruleID int, cooldownMinutes int, 
 	`, userID, ruleID, alert.AlertType, alert.Severity, alert.Title, alert.Message, metadataJSON,
 	).Scan(&historyID)
 	if err != nil {
-		log.Printf("Failed to insert alert history for user %d: %v", userID, err)
+		slog.Error("Failed to insert alert history", "component", "notifications", "alert_type", alert.AlertType, "user_id", userID, "error", err)
 		return
 	}
 
@@ -77,7 +77,7 @@ func Dispatch(ctx context.Context, userID int, ruleID int, cooldownMinutes int, 
 		WHERE arc.rule_id = $1 AND nc.enabled = true
 	`, ruleID)
 	if err != nil {
-		log.Printf("Failed to fetch channels for rule %d: %v", ruleID, err)
+		slog.Error("Failed to fetch channels for rule", "component", "notifications", "rule_id", ruleID, "error", err)
 		return
 	}
 	defer rows.Close()
@@ -87,7 +87,7 @@ func Dispatch(ctx context.Context, userID int, ruleID int, cooldownMinutes int, 
 		var chType string
 		var chConfig json.RawMessage
 		if err := rows.Scan(&chID, &chType, &chConfig); err != nil {
-			log.Printf("Failed to scan channel: %v", err)
+			slog.Error("Failed to scan channel", "component", "notifications", "error", err)
 			continue
 		}
 
@@ -97,11 +97,11 @@ func Dispatch(ctx context.Context, userID int, ruleID int, cooldownMinutes int, 
 				Address string `json:"address"`
 			}
 			if err := json.Unmarshal(chConfig, &cfg); err != nil || cfg.Address == "" {
-				log.Printf("Invalid email channel config for channel %d", chID)
+				slog.Warn("Invalid email channel config", "component", "notifications", "channel_type", "email", "channel_id", chID)
 				continue
 			}
 			if err := email.SendAlertEmail(cfg.Address, alert); err != nil {
-				log.Printf("Failed to send alert email to %s: %v", cfg.Address, err)
+				slog.Error("Failed to send alert email", "component", "notifications", "channel_type", "email", "address", cfg.Address, "error", err)
 			}
 
 		case "webhook":
@@ -111,11 +111,11 @@ func Dispatch(ctx context.Context, userID int, ruleID int, cooldownMinutes int, 
 				Headers map[string]string `json:"headers"`
 			}
 			if err := json.Unmarshal(chConfig, &cfg); err != nil || cfg.URL == "" {
-				log.Printf("Invalid webhook channel config for channel %d", chID)
+				slog.Warn("Invalid webhook channel config", "component", "notifications", "channel_type", "webhook", "channel_id", chID)
 				continue
 			}
 			if err := SendWebhook(cfg.URL, cfg.Method, cfg.Headers, alert); err != nil {
-				log.Printf("Failed to send webhook to %s: %v", cfg.URL, err)
+				slog.Error("Failed to send webhook", "component", "notifications", "channel_type", "webhook", "url", cfg.URL, "error", err)
 			}
 
 		case "discord":
@@ -123,16 +123,16 @@ func Dispatch(ctx context.Context, userID int, ruleID int, cooldownMinutes int, 
 				URL string `json:"url"`
 			}
 			if err := json.Unmarshal(chConfig, &cfg); err != nil || cfg.URL == "" {
-				log.Printf("Invalid discord channel config for channel %d", chID)
+				slog.Warn("Invalid discord channel config", "component", "notifications", "channel_type", "discord", "channel_id", chID)
 				continue
 			}
 			if err := SendDiscordWebhook(cfg.URL, alert); err != nil {
-				log.Printf("Failed to send discord webhook to %s: %v", cfg.URL, err)
+				slog.Error("Failed to send discord webhook", "component", "notifications", "channel_type", "discord", "url", cfg.URL, "error", err)
 			}
 		}
 	}
 
-	log.Printf("Alert dispatched: [%s] %s for user %d (history #%d)", alert.Severity, alert.Title, userID, historyID)
+	slog.Info("Alert dispatched", "component", "notifications", "alert_type", alert.AlertType, "severity", alert.Severity, "title", alert.Title, "user_id", userID, "history_id", historyID)
 }
 
 // Resolve marks open alerts as resolved.
@@ -143,6 +143,6 @@ func Resolve(ctx context.Context, userID int, alertType, metadataKey, metadataVa
 		  AND metadata->>$3 = $4
 	`, userID, alertType, metadataKey, metadataValue)
 	if err != nil {
-		log.Printf("Failed to resolve alerts for user %d type %s: %v", userID, alertType, err)
+		slog.Error("Failed to resolve alerts", "component", "notifications", "alert_type", alertType, "user_id", userID, "error", err)
 	}
 }

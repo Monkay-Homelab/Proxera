@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"log"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -46,7 +46,7 @@ func LookupGeo(ips []string) (map[string]GeoResult, error) {
 		 FROM geo_cache WHERE ip_address = ANY($1::text[])
 		 AND looked_up_at > NOW() - INTERVAL '30 days'`, ips)
 	if err != nil {
-		log.Printf("[geo] Cache query error: %v", err)
+		slog.Error("cache query error", "component", "geo", "error", err)
 	} else {
 		defer rows.Close()
 		for rows.Next() {
@@ -97,17 +97,17 @@ func LookupGeo(ips []string) (map[string]GeoResult, error) {
 
 		resp, err := client.Do(req)
 		if err != nil {
-			log.Printf("[geo] Batch lookup error: %v", err)
+			slog.Error("batch lookup error", "component", "geo", "error", err)
 			continue
 		}
 
 		var apiResults []ipAPIResponse
 		if err := json.NewDecoder(resp.Body).Decode(&apiResults); err != nil {
-			resp.Body.Close()
-			log.Printf("[geo] Failed to decode batch response: %v", err)
+			_ = resp.Body.Close()
+			slog.Error("failed to decode batch response", "component", "geo", "error", err)
 			continue
 		}
-		resp.Body.Close()
+		_ = resp.Body.Close()
 
 		// Upsert into cache and populate results
 		for _, r := range apiResults {
@@ -138,7 +138,7 @@ func LookupGeo(ips []string) (map[string]GeoResult, error) {
 				r.Query, r.Country, r.CountryCode, r.City, r.Region, r.Lat, r.Lon, r.ISP,
 			)
 			if err != nil {
-				log.Printf("[geo] Failed to cache geo for %s: %v", r.Query, err)
+				slog.Error("failed to cache geo", "component", "geo", "ip", r.Query, "error", err)
 			}
 		}
 

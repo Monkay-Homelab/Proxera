@@ -29,7 +29,7 @@ func (cf *CloudflareProvider) VerifyZone(ctx context.Context, creds Credentials)
 	if err != nil {
 		return "", "", fmt.Errorf("failed to reach Cloudflare API: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var cfResp struct {
 		Success bool `json:"success"`
@@ -69,7 +69,7 @@ func (cf *CloudflareProvider) ListRecords(ctx context.Context, creds Credentials
 	if err != nil {
 		return nil, fmt.Errorf("failed to reach Cloudflare API: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var cfResp struct {
 		Success bool `json:"success"`
@@ -92,7 +92,7 @@ func (cf *CloudflareProvider) ListRecords(ctx context.Context, creds Credentials
 		if len(cfResp.Errors) > 0 {
 			return nil, fmt.Errorf("%s", cfResp.Errors[0].Message)
 		}
-		return nil, fmt.Errorf("Cloudflare API returned an error")
+		return nil, fmt.Errorf("cloudflare API returned an error")
 	}
 
 	records := make([]Record, 0, len(cfResp.Result))
@@ -212,9 +212,9 @@ func (cf *CloudflareProvider) request(ctx context.Context, method, url, apiKey s
 
 	resp, err := cfClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("Cloudflare API unreachable: %w", err)
+		return nil, fmt.Errorf("cloudflare API unreachable: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -235,7 +235,7 @@ func (cf *CloudflareProvider) request(ctx context.Context, method, url, apiKey s
 		if len(cfResp.Errors) > 0 {
 			return nil, fmt.Errorf("%s", cfResp.Errors[0].Message)
 		}
-		return nil, fmt.Errorf("Cloudflare API returned an error")
+		return nil, fmt.Errorf("cloudflare API returned an error")
 	}
 	return cfResp.Result, nil
 }

@@ -8,7 +8,7 @@
 	let agentName = '';
 	let logs = '';
 	let loading = true;
-	let error = null;
+	let error: string | null = null;
 
 	onMount(async () => {
 		await fetchLogs();
@@ -33,7 +33,7 @@
 
 			const result = await logsResponse.json();
 			logs = result.logs || 'No logs available';
-		} catch (err) {
+		} catch (err: any) {
 			error = err.message;
 		} finally {
 			loading = false;

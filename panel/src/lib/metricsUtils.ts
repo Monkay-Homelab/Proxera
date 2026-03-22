@@ -2,6 +2,20 @@
 
 import type { MetricsBucket } from '$lib/types';
 
+/** Extended bucket with `time` alias and weighted-average accumulators. */
+interface AggBucket extends MetricsBucket {
+	time: string;
+	avg_latency_ms: number;
+	_latency_weight: number;
+	_p50_weight: number;
+	_p95_weight: number;
+	_p99_weight: number;
+	_upstream_weight: number;
+	_reqsize_weight: number;
+	_ressize_weight: number;
+	[key: string]: any;
+}
+
 /** HTML-escape a string for safe tooltip rendering */
 export function esc(s: unknown): string {
 	if (s == null) return '';
@@ -110,12 +124,12 @@ export function formatBlockedTime(ts: string): string {
 
 /* ── Bucket aggregation ── */
 
-export function aggregateBuckets(buckets: MetricsBucket[]): MetricsBucket[] {
-	const map: Record<string, MetricsBucket & Record<string, number>> = {};
-	for (const b of buckets) {
-		const key = b.time;
+export function aggregateBuckets(buckets: MetricsBucket[]): AggBucket[] {
+	const map: Record<string, AggBucket> = {};
+	for (const b of buckets as AggBucket[]) {
+		const key = b.time || b.bucket;
 		if (!map[key]) {
-			map[key] = { time: b.time, request_count:0, bytes_sent:0, bytes_received:0, status_2xx:0, status_3xx:0, status_4xx:0, status_5xx:0, _latency_weight:0, _p50_weight:0, _p95_weight:0, _p99_weight:0, _upstream_weight:0, _reqsize_weight:0, _ressize_weight:0, avg_latency_ms:0, latency_p50_ms:0, latency_p95_ms:0, latency_p99_ms:0, avg_upstream_ms:0, avg_request_size:0, avg_response_size:0, cache_hits:0, cache_misses:0, unique_ips:0, connection_count:0 };
+			map[key] = { time: key, bucket: key, request_count:0, bytes_sent:0, bytes_received:0, status_2xx:0, status_3xx:0, status_4xx:0, status_5xx:0, _latency_weight:0, _p50_weight:0, _p95_weight:0, _p99_weight:0, _upstream_weight:0, _reqsize_weight:0, _ressize_weight:0, avg_latency_ms:0, latency_p50_ms:0, latency_p95_ms:0, latency_p99_ms:0, avg_upstream_ms:0, avg_request_size:0, avg_response_size:0, cache_hits:0, cache_misses:0, unique_ips:0, connection_count:0 };
 		}
 		const a = map[key], rc = b.request_count||0;
 		a.request_count+=rc; a.bytes_sent+=b.bytes_sent||0; a.bytes_received+=b.bytes_received||0;

@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net"
 	"strconv"
@@ -602,8 +601,3 @@ func CrowdSecSetBanDuration(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"message": response, "duration": body.Duration})
 }
 
-// jsonStr marshals a value to a JSON string for WebSocket responses
-func jsonStr(v interface{}) string {
-	b, _ := json.Marshal(v)
-	return string(b)
-}
